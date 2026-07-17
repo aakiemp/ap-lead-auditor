@@ -1,0 +1,31 @@
+{
+  "name": "AP Lead Auditor",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:22-bookworm",
+
+  "features": {
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+  },
+
+  "remoteUser": "node",
+
+  "runArgs": [
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges:true",
+    "--pids-limit=512",
+    "--memory=6g",
+    "--cpus=4"
+  ],
+
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/node/.claude"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ]
+    }
+  }
+}
