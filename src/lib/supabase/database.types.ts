@@ -1,0 +1,448 @@
+/**
+ * Hand-maintained types mirroring
+ * supabase/migrations/20260717000000_phase2_core_schema.sql.
+ *
+ * No Supabase CLI is set up in this environment yet, so these are not
+ * CLI-generated. Keep this file in sync by hand whenever a migration
+ * changes the schema; switch to `supabase gen types typescript` once
+ * the CLI is linked to a project (see README.md).
+ */
+
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json | undefined }
+  | Json[];
+
+export type AuditDepth = "discovery_only" | "basic" | "deep";
+
+export type AuditJobStatus =
+  | "pending"
+  | "queued"
+  | "discovering"
+  | "auditing"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "skipped";
+
+export type AuditStatus = "completed" | "partial" | "failed";
+
+export type FindingCategory =
+  | "performance"
+  | "accessibility"
+  | "seo"
+  | "conversion"
+  | "technical"
+  | "trust"
+  | "contact"
+  | "freshness"
+  | "content"
+  | "local_consistency"
+  | "technology"
+  | "broken_link";
+
+export type FindingSeverity = "info" | "low" | "medium" | "high" | "critical";
+
+export type FindingConfidence = "verified" | "likely" | "manual_review";
+
+export type FindingStatus = "active" | "verified" | "dismissed";
+
+export type Database = {
+  public: {
+    Tables: {
+      businesses: {
+        Row: {
+          id: string;
+          google_place_id: string | null;
+          name: string;
+          city: string | null;
+          state: string | null;
+          phone: string | null;
+          source: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          google_place_id?: string | null;
+          name: string;
+          city?: string | null;
+          state?: string | null;
+          phone?: string | null;
+          source?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          google_place_id?: string | null;
+          name?: string;
+          city?: string | null;
+          state?: string | null;
+          phone?: string | null;
+          source?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+
+      websites: {
+        Row: {
+          id: string;
+          business_id: string;
+          input_url: string;
+          final_url: string | null;
+          root_domain: string | null;
+          is_reachable: boolean | null;
+          http_status: number | null;
+          https_enabled: boolean | null;
+          redirect_count: number | null;
+          redirect_chain: Json | null;
+          http_to_https_redirect: boolean | null;
+          failure_reason: string | null;
+          last_checked_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          business_id: string;
+          input_url: string;
+          final_url?: string | null;
+          root_domain?: string | null;
+          is_reachable?: boolean | null;
+          http_status?: number | null;
+          https_enabled?: boolean | null;
+          redirect_count?: number | null;
+          redirect_chain?: Json | null;
+          http_to_https_redirect?: boolean | null;
+          failure_reason?: string | null;
+          last_checked_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          business_id?: string;
+          input_url?: string;
+          final_url?: string | null;
+          root_domain?: string | null;
+          is_reachable?: boolean | null;
+          http_status?: number | null;
+          https_enabled?: boolean | null;
+          redirect_count?: number | null;
+          redirect_chain?: Json | null;
+          http_to_https_redirect?: boolean | null;
+          failure_reason?: string | null;
+          last_checked_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "websites_business_id_fkey";
+            columns: ["business_id"];
+            referencedRelation: "businesses";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+
+      audit_jobs: {
+        Row: {
+          id: string;
+          business_id: string;
+          website_id: string;
+          audit_depth: AuditDepth;
+          status: AuditJobStatus;
+          attempt: number;
+          claimed_by: string | null;
+          claimed_at: string | null;
+          idempotency_key: string | null;
+          error_message: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          business_id: string;
+          website_id: string;
+          audit_depth: AuditDepth;
+          status?: AuditJobStatus;
+          attempt?: number;
+          claimed_by?: string | null;
+          claimed_at?: string | null;
+          idempotency_key?: string | null;
+          error_message?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          business_id?: string;
+          website_id?: string;
+          audit_depth?: AuditDepth;
+          status?: AuditJobStatus;
+          attempt?: number;
+          claimed_by?: string | null;
+          claimed_at?: string | null;
+          idempotency_key?: string | null;
+          error_message?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "audit_jobs_business_id_fkey";
+            columns: ["business_id"];
+            referencedRelation: "businesses";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "audit_jobs_website_id_fkey";
+            columns: ["website_id"];
+            referencedRelation: "websites";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+
+      audits: {
+        Row: {
+          id: string;
+          audit_job_id: string;
+          website_id: string;
+          audit_depth: AuditDepth;
+          status: AuditStatus;
+          raw_pagespeed_mobile: Json | null;
+          raw_pagespeed_desktop: Json | null;
+          pagespeed_mobile: Json | null;
+          pagespeed_desktop: Json | null;
+          homepage_title: string | null;
+          meta_description: string | null;
+          canonical_url: string | null;
+          robots_meta: string | null;
+          h1_text: string | null;
+          h1_count: number | null;
+          summary: string | null;
+          started_at: string | null;
+          completed_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          audit_job_id: string;
+          website_id: string;
+          audit_depth: AuditDepth;
+          status: AuditStatus;
+          raw_pagespeed_mobile?: Json | null;
+          raw_pagespeed_desktop?: Json | null;
+          pagespeed_mobile?: Json | null;
+          pagespeed_desktop?: Json | null;
+          homepage_title?: string | null;
+          meta_description?: string | null;
+          canonical_url?: string | null;
+          robots_meta?: string | null;
+          h1_text?: string | null;
+          h1_count?: number | null;
+          summary?: string | null;
+          started_at?: string | null;
+          completed_at?: string | null;
+          created_at?: string;
+        };
+        // audits rows are immutable after creation — no update path is
+        // expected in application code, but Update is still declared
+        // (matching the shape Insert would produce) since the Supabase
+        // client types require it.
+        Update: {
+          id?: string;
+          audit_job_id?: string;
+          website_id?: string;
+          audit_depth?: AuditDepth;
+          status?: AuditStatus;
+          raw_pagespeed_mobile?: Json | null;
+          raw_pagespeed_desktop?: Json | null;
+          pagespeed_mobile?: Json | null;
+          pagespeed_desktop?: Json | null;
+          homepage_title?: string | null;
+          meta_description?: string | null;
+          canonical_url?: string | null;
+          robots_meta?: string | null;
+          h1_text?: string | null;
+          h1_count?: number | null;
+          summary?: string | null;
+          started_at?: string | null;
+          completed_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "audits_audit_job_id_fkey";
+            columns: ["audit_job_id"];
+            referencedRelation: "audit_jobs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "audits_website_id_fkey";
+            columns: ["website_id"];
+            referencedRelation: "websites";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+
+      audit_findings: {
+        Row: {
+          id: string;
+          audit_id: string;
+          business_id: string;
+          category: FindingCategory;
+          finding_type: string;
+          title: string;
+          description: string;
+          evidence: string | null;
+          source_url: string | null;
+          source_type: string | null;
+          severity: FindingSeverity;
+          confidence: FindingConfidence;
+          status: FindingStatus;
+          raw_value: string | null;
+          normalized_value: string | null;
+          points: number;
+          rule_id: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          audit_id: string;
+          business_id: string;
+          category: FindingCategory;
+          finding_type: string;
+          title: string;
+          description: string;
+          evidence?: string | null;
+          source_url?: string | null;
+          source_type?: string | null;
+          severity: FindingSeverity;
+          confidence: FindingConfidence;
+          status?: FindingStatus;
+          raw_value?: string | null;
+          normalized_value?: string | null;
+          points?: number;
+          rule_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          audit_id?: string;
+          business_id?: string;
+          category?: FindingCategory;
+          finding_type?: string;
+          title?: string;
+          description?: string;
+          evidence?: string | null;
+          source_url?: string | null;
+          source_type?: string | null;
+          severity?: FindingSeverity;
+          confidence?: FindingConfidence;
+          status?: FindingStatus;
+          raw_value?: string | null;
+          normalized_value?: string | null;
+          points?: number;
+          rule_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "audit_findings_audit_id_fkey";
+            columns: ["audit_id"];
+            referencedRelation: "audits";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "audit_findings_business_id_fkey";
+            columns: ["business_id"];
+            referencedRelation: "businesses";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+
+      audit_scores: {
+        Row: {
+          id: string;
+          audit_id: string;
+          website_need_score: number | null;
+          business_value_score: number | null;
+          contactability_score: number | null;
+          priority_score: number | null;
+          breakdown: Json | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          audit_id: string;
+          website_need_score?: number | null;
+          business_value_score?: number | null;
+          contactability_score?: number | null;
+          priority_score?: number | null;
+          breakdown?: Json | null;
+          created_at?: string;
+        };
+        // audit_scores rows are immutable after creation — see the note
+        // on audits.Update above; the same reasoning applies here.
+        Update: {
+          id?: string;
+          audit_id?: string;
+          website_need_score?: number | null;
+          business_value_score?: number | null;
+          contactability_score?: number | null;
+          priority_score?: number | null;
+          breakdown?: Json | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "audit_scores_audit_id_fkey";
+            columns: ["audit_id"];
+            referencedRelation: "audits";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+    };
+    Views: Record<string, never>;
+    Functions: Record<string, never>;
+    Enums: Record<string, never>;
+    CompositeTypes: Record<string, never>;
+  };
+};
+
+export type Business = Database["public"]["Tables"]["businesses"]["Row"];
+export type BusinessInsert = Database["public"]["Tables"]["businesses"]["Insert"];
+export type BusinessUpdate = Database["public"]["Tables"]["businesses"]["Update"];
+
+export type Website = Database["public"]["Tables"]["websites"]["Row"];
+export type WebsiteInsert = Database["public"]["Tables"]["websites"]["Insert"];
+export type WebsiteUpdate = Database["public"]["Tables"]["websites"]["Update"];
+
+export type AuditJob = Database["public"]["Tables"]["audit_jobs"]["Row"];
+export type AuditJobInsert = Database["public"]["Tables"]["audit_jobs"]["Insert"];
+export type AuditJobUpdate = Database["public"]["Tables"]["audit_jobs"]["Update"];
+
+export type Audit = Database["public"]["Tables"]["audits"]["Row"];
+export type AuditInsert = Database["public"]["Tables"]["audits"]["Insert"];
+
+export type AuditFinding = Database["public"]["Tables"]["audit_findings"]["Row"];
+export type AuditFindingInsert = Database["public"]["Tables"]["audit_findings"]["Insert"];
+export type AuditFindingUpdate = Database["public"]["Tables"]["audit_findings"]["Update"];
+
+export type AuditScore = Database["public"]["Tables"]["audit_scores"]["Row"];
+export type AuditScoreInsert = Database["public"]["Tables"]["audit_scores"]["Insert"];

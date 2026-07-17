@@ -30,7 +30,11 @@ Prioritize a working vertical slice over completeness or polish.
 - **Next.js (App Router) + TypeScript (strict) + Tailwind CSS**, deployed
   to Vercel (later phase).
 - **Supabase** for database and storage. No authentication yet — see
-  "Current phase" below. RLS will be added once auth exists.
+  "Current phase" below. Every table has row level security **enabled
+  with no policies** (deny-all for anon/authenticated roles); real
+  per-owner policies get added once auth exists. All application data
+  access goes through the server-only service-role client, which
+  bypasses RLS.
 - **Next.js API routes stay thin.** Long-running work (Places
   discovery, PageSpeed calls, screenshots, crawling) must never run
   inside a single long Vercel request. Use an async job model instead:
@@ -89,8 +93,12 @@ schema are `verified`, `likely`, `manual_review` — use them honestly.
 ## Security rules
 
 - No authentication exists yet (see "Current phase"), so there is
-  currently no user session, no RLS, and no protected route to bypass.
-  These rules apply as the app grows into handling external input:
+  currently no user session and no protected route to bypass. Every
+  table does have RLS enabled with no policies (deny-all), not because
+  it models per-user access yet, but to keep the anon key — which is
+  exposed in the browser bundle by design — from being able to read or
+  write application data. These rules apply as the app grows into
+  handling external input:
 - Server-side environment variables only for secrets — never expose API
   keys in client code or `NEXT_PUBLIC_*` variables.
 - All server-only Supabase access uses the service role key from
@@ -115,7 +123,7 @@ schema are `verified`, `likely`, `manual_review` — use them honestly.
 | Phase | Scope |
 |---|---|
 | **1** | Next.js scaffold, TypeScript strict, Tailwind, ESLint, env-var validation structure, basic Supabase client/server plumbing, placeholder dashboard, README, CLAUDE.md |
-| 2 | Core database migrations (`businesses`, `websites`, `audit_jobs`, `audits`, `audit_findings`, `audit_scores`), seed data. No auth/RLS yet at this stage since auth is postponed. |
+| **2** | Core database migration (`businesses`, `websites`, `audit_jobs`, `audits`, `audit_findings`, `audit_scores`), hand-maintained TypeScript types, RLS enabled with no policies (deny-all) on all six tables. No seed data yet. Still no auth. |
 | 3 | Manual "enter a URL" flow: create business+website+job records, URL normalization, SSRF guard |
 | 4 | PageSpeed integration (mobile), normalization, findings generation, website-need scoring, audit detail page |
 | 5 | Copy-to-AI plain-text summary, finding verify/dismiss actions |
@@ -140,18 +148,25 @@ add it preemptively; wait for explicit approval.
 
 ## Current phase
 
-**Phase 1 — complete.** Project scaffold only: Next.js App Router,
-TypeScript strict, Tailwind, ESLint, env validation structure, inert
-Supabase client/server plumbing, one placeholder dashboard page.
+**Phase 1 and Phase 2 — complete.** Project scaffold (Next.js App
+Router, TypeScript strict, Tailwind, ESLint, env validation structure,
+Supabase client/server plumbing, placeholder dashboard) plus the core
+database schema: `businesses`, `websites`, `audit_jobs`, `audits`,
+`audit_findings`, `audit_scores`, with foreign keys, check constraints,
+indexes, `updated_at` triggers on mutable tables, and RLS enabled (no
+policies) on all six. The migration has **not** been applied to any
+Supabase project yet — see `README.md`'s "Database" section for the
+manual steps. No application code reads or writes these tables yet.
 
-**Do not begin Phase 2 without explicit approval.**
+**Do not begin Phase 3 without explicit approval.**
 
 ## Postponed (not yet implemented — do not add without explicit approval)
 
 - Authentication: Supabase Auth, login/signup pages, protected routes,
-  `profiles` table, user roles, user-based RLS
-- Database migrations / any Supabase tables
-- RLS policies
+  `profiles` table, user roles, and any user-based RLS policy (RLS
+  itself is enabled with no policies as of Phase 2 — see "Current
+  phase" — but real per-user policies wait for auth)
+- Seed data
 - Manual URL submission
 - PageSpeed integration
 - External website fetching
