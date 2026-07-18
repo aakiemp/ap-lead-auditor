@@ -2,6 +2,7 @@ import "server-only";
 
 import { checkReachability, SsrfBlockedError } from "@/lib/audit/check-reachability";
 import { InvalidUrlError, parseAndNormalizeInputUrl, stripTrackingParams } from "@/lib/audit/normalize-url";
+import { normalizePhoneNumber } from "@/lib/places/normalize-phone";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/server";
 import type { WebsiteIntakeInput } from "@/lib/validation/website-intake";
 
@@ -56,6 +57,7 @@ export async function createManualLead(input: WebsiteIntakeInput): Promise<Creat
       city: input.city ?? null,
       state: input.state ?? null,
       phone: input.phone ?? null,
+      phone_normalized: normalizePhoneNumber(input.phone),
       source: "manual",
     })
     .select("id")

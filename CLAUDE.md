@@ -160,7 +160,7 @@ add it preemptively; wait for explicit approval.
 
 ## Current phase
 
-**Phase 1 through Phase 7 — complete and fully verified.**
+**Phase 1 through Phase 8 — complete and fully verified.**
 
 Phase 3 added the manual single-website intake flow: `/leads/new` (a
 Next.js Server Action, not a public API route), `/leads` (list),
@@ -350,11 +350,98 @@ Apify screenshots) and run **concurrently** with the PageSpeed call:
   business. See `README.md`'s "Development fixtures" for what it
   exercised.
 
+Phase 8 added Google Places business discovery (Text Search (New)
+only — no Nearby Search, no Geocoding, no separate Place Details
+calls):
+- `/searches/new` — form (niche, city, state, zip, max results 1–60,
+  min rating, min review count, "exclude businesses with no website"
+  toggle) that calls `runSearch()`.
+- `/searches` — list of past searches with found/imported counts and
+  status. `/searches/[searchId]` — one search's imported businesses in
+  a checkbox table, with a "Queue selected" action.
+- `src/lib/places/places-client.ts` — `searchTextPlaces()`, a thin
+  fetch wrapper around `POST /v1/places:searchText`. The API key goes
+  only in the `X-Goog-Api-Key` header (never a query string, log, or
+  error), field mask in `X-Goog-FieldMask`, 15s timeout. `minRating` is
+  sent directly in the request body when set — Text Search (New)
+  supports it natively (this corrected an earlier assumption that it
+  would need a local filter, made during planning).
+- `src/lib/places/import-search.ts` — `runSearch()` creates the
+  `searches` row *before* calling Google (so a total API failure still
+  leaves an auditable `failed` row with a sanitized error), pages up to
+  3 times (`pageSize` = remaining capped at 20, a 2s delay between
+  pages since Google's `nextPageToken` isn't immediately valid),
+  applies `minReviews` and `excludeNoWebsite` as **local** post-filters
+  (the API has no such parameters), then imports each surviving place
+  via `importOnePlace()`.
+- **Dedup**: primary match is exact `google_place_id` equality — reuses
+  the business row, refreshes only the Google-sourced fields that are
+  actually present (never overwrites existing non-blank data with a
+  blank Google value — `buildUpdatePayload()` only includes non-null/
+  non-blank fields), and stamps `last_places_sync_at`. When no
+  `google_place_id` match exists, a **new** business row is always
+  created — normalized phone (`src/lib/places/normalize-phone.ts`,
+  also now used by `create-manual-lead.ts` so manually-created
+  businesses stay matchable) or website root-domain equality against
+  an *existing* business is flag-only: `checkSecondaryMatch()` attaches
+  a human-readable `duplicate_warning` to the `search_businesses` row.
+  Businesses are **never auto-merged** on a secondary match — confirmed
+  in testing against a real, coincidental case (two physically distinct
+  Stumptown Coffee Roasters locations sharing one website domain) and
+  correctly flagged without merging.
+- **No reachability check during import.** `ensureWebsiteRow()` does
+  syntactic-only URL normalization (`parseAndNormalizeInputUrl()`, no
+  network call) and inserts a `websites` row with every
+  reachability-related field left `null` — `is_reachable`, `final_url`,
+  `http_status`, `https_enabled`, `redirect_count`, `redirect_chain`,
+  `http_to_https_redirect`, `failure_reason`, `last_checked_at`. This
+  was a deliberate reversal of the original Phase 8 plan (which would
+  have run the Phase 3 reachability check automatically during import)
+  for cost/speed/consent reasons.
+- **Queueing is manual and separate from discovery.** `runSearch()`
+  never creates an `audit_jobs` row. `queueSelectedAction()` (in
+  `/searches/[searchId]/actions.ts`) only runs after a human selects
+  businesses on the results page: validates every selected id as a
+  UUID, cross-checks each against `search_businesses` for *this*
+  search (rejecting ids not actually linked to it), skips businesses
+  with no `websites` row or an already-active (`pending`/`queued`/
+  `auditing`) basic job, and returns a counted summary
+  (`"N queued, N skipped (no website), N skipped (already queued), N
+  invalid selection"`). It never starts PageSpeed, HTML scanning,
+  screenshots, or a reachability check itself.
+- **`run-audit.ts` gained a reachability step.** Since Places-imported
+  websites have `is_reachable = null` (never checked) rather than
+  `true`/`false`, treating `!== true` as "confirmed unreachable" (the
+  Phase 4/7 behavior) would have wrongly skipped every Places-imported
+  business's audit. `runAudit()` now checks for `is_reachable === null`
+  first: if so, it runs `checkReachability()` immediately, persists the
+  result to the `websites` row (same fields Phase 3's
+  `create-manual-lead.ts` writes), and only then proceeds with the
+  existing reachable/unreachable branching. Verified end-to-end: a
+  Places-imported business with `is_reachable: null` had it flip to
+  `true` (with `http_status`, `https_enabled`, `redirect_chain`, etc.
+  all populated) and its basic audit completed normally in the same
+  "Run basic audit" click — manually-created leads are unaffected,
+  since Phase 3 always sets a real boolean at creation time.
+- **A real bug was found and fixed during Phase 8 testing, outside
+  this project's own code**: `GOOGLE_PLACES_API_KEY` initially returned
+  `403 PERMISSION_DENIED` on every request (confirmed with a raw
+  `fetch` outside the app, so not an app bug) because billing wasn't
+  correctly attached to the Google Cloud project the key belongs to.
+  Fixed directly by the user in Google Cloud Console. The app's
+  failure-path handling around this was itself verified correct while
+  diagnosing it: the `searches` row was still created first, ended up
+  `status: 'failed'`, and got a sanitized `error_message` — the raw
+  Google 403 body was never exposed to the browser.
+- Test searches: **"coffee shop" in Portland, OR** (real Google Places
+  data, not synthetic) — see `README.md`'s "Development fixtures" for
+  what was verified.
+
 All phases were confirmed via full end-to-end testing against the real
 dev Supabase project — see `README.md`'s "Development fixtures"
 section for the exact verified records.
 
-**Do not begin Phase 8 without explicit approval.**
+**Do not begin Phase 9 without explicit approval.**
 
 ## Postponed (not yet implemented — do not add without explicit approval)
 
@@ -372,8 +459,9 @@ section for the exact verified records.
   detects presence/absence of a tel: link, not this fuller comparison)
 - Contact-page broken-link verification (Phase 7 only detects whether a
   contact-page link exists, not whether it resolves)
-- Contact-information mismatch checking (needs Google Places data —
-  Phase 8+)
+- Contact-information mismatch checking (Google Places data is now
+  available as of Phase 8, but the comparison logic itself is not yet
+  implemented)
 - PageSpeed fields beyond the 4 category scores + 5 Core Web Vital
   metrics: INP, TTFB, page weight/request count, itemized diagnostic
   audits (render-blocking resources, unused JS/CSS, image issues, etc.)
@@ -388,7 +476,6 @@ section for the exact verified records.
   clipboard-copies plain text — no OpenAI/Anthropic call is ever made)
 - Automated outreach / outreach status tracking
 - Adding a manual finding (verify/dismiss/restore only, as of Phase 5)
-- Google Places integration
 - Apify usage beyond homepage screenshots (`apify/screenshot-url` only,
   as of Phase 6 — no crawling actor, no competitor analysis)
 - Full-page multi-page crawling (Phase 6's "full-page" screenshots

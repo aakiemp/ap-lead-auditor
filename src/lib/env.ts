@@ -32,6 +32,7 @@ const serverSchema = z.object({
   GOOGLE_PAGESPEED_API_KEY: z.string().min(1),
   APIFY_API_TOKEN: z.string().min(1),
   APIFY_SCREENSHOT_ACTOR_ID: z.string().min(1),
+  GOOGLE_PLACES_API_KEY: z.string().min(1),
 });
 
 function parseClientEnv() {
@@ -55,6 +56,7 @@ function parseServerEnv() {
     GOOGLE_PAGESPEED_API_KEY: process.env.GOOGLE_PAGESPEED_API_KEY,
     APIFY_API_TOKEN: process.env.APIFY_API_TOKEN,
     APIFY_SCREENSHOT_ACTOR_ID: process.env.APIFY_SCREENSHOT_ACTOR_ID,
+    GOOGLE_PLACES_API_KEY: process.env.GOOGLE_PLACES_API_KEY,
   });
 
   if (!parsed.success) {

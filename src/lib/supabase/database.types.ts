@@ -52,6 +52,8 @@ export type FindingStatus = "active" | "verified" | "dismissed";
 
 export type DeviceType = "mobile" | "desktop";
 
+export type SearchStatus = "pending" | "completed" | "partial" | "failed";
+
 export type Database = {
   public: {
     Tables: {
@@ -64,6 +66,19 @@ export type Database = {
           state: string | null;
           phone: string | null;
           source: string;
+          primary_category: string | null;
+          categories: string[] | null;
+          address: string | null;
+          zip: string | null;
+          lat: number | null;
+          lng: number | null;
+          google_rating: number | null;
+          google_review_count: number | null;
+          google_maps_url: string | null;
+          opening_hours: Json | null;
+          business_status: string | null;
+          phone_normalized: string | null;
+          last_places_sync_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -75,6 +90,19 @@ export type Database = {
           state?: string | null;
           phone?: string | null;
           source?: string;
+          primary_category?: string | null;
+          categories?: string[] | null;
+          address?: string | null;
+          zip?: string | null;
+          lat?: number | null;
+          lng?: number | null;
+          google_rating?: number | null;
+          google_review_count?: number | null;
+          google_maps_url?: string | null;
+          opening_hours?: Json | null;
+          business_status?: string | null;
+          phone_normalized?: string | null;
+          last_places_sync_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -86,6 +114,19 @@ export type Database = {
           state?: string | null;
           phone?: string | null;
           source?: string;
+          primary_category?: string | null;
+          categories?: string[] | null;
+          address?: string | null;
+          zip?: string | null;
+          lat?: number | null;
+          lng?: number | null;
+          google_rating?: number | null;
+          google_review_count?: number | null;
+          google_maps_url?: string | null;
+          opening_hours?: Json | null;
+          business_status?: string | null;
+          phone_normalized?: string | null;
+          last_places_sync_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -473,6 +514,111 @@ export type Database = {
           },
           {
             foreignKeyName: "screenshots_business_id_fkey";
+            columns: ["business_id"];
+            referencedRelation: "businesses";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+
+      searches: {
+        Row: {
+          id: string;
+          niche: string;
+          city: string;
+          state: string;
+          zip: string | null;
+          max_results: number;
+          min_rating: number | null;
+          min_reviews: number | null;
+          exclude_no_website: boolean;
+          status: SearchStatus;
+          businesses_found: number;
+          businesses_imported: number;
+          businesses_filtered: number;
+          businesses_without_website: number;
+          error_message: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          niche: string;
+          city: string;
+          state: string;
+          zip?: string | null;
+          max_results?: number;
+          min_rating?: number | null;
+          min_reviews?: number | null;
+          exclude_no_website?: boolean;
+          status?: SearchStatus;
+          businesses_found?: number;
+          businesses_imported?: number;
+          businesses_filtered?: number;
+          businesses_without_website?: number;
+          error_message?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          niche?: string;
+          city?: string;
+          state?: string;
+          zip?: string | null;
+          max_results?: number;
+          min_rating?: number | null;
+          min_reviews?: number | null;
+          exclude_no_website?: boolean;
+          status?: SearchStatus;
+          businesses_found?: number;
+          businesses_imported?: number;
+          businesses_filtered?: number;
+          businesses_without_website?: number;
+          error_message?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+
+      search_businesses: {
+        Row: {
+          id: string;
+          search_id: string;
+          business_id: string;
+          rank_in_search: number | null;
+          is_new_business: boolean;
+          duplicate_warning: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          search_id: string;
+          business_id: string;
+          rank_in_search?: number | null;
+          is_new_business?: boolean;
+          duplicate_warning?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          search_id?: string;
+          business_id?: string;
+          rank_in_search?: number | null;
+          is_new_business?: boolean;
+          duplicate_warning?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "search_businesses_search_id_fkey";
+            columns: ["search_id"];
+            referencedRelation: "searches";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "search_businesses_business_id_fkey";
             columns: ["business_id"];
             referencedRelation: "businesses";
             referencedColumns: ["id"];

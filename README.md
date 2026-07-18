@@ -11,7 +11,7 @@ against.
 
 ## Current status
 
-**Phase 1 through Phase 7 — complete and fully verified end-to-end.**
+**Phase 1 through Phase 8 — complete and fully verified end-to-end.**
 
 Phase 1 — bare project scaffold:
 
@@ -158,17 +158,49 @@ basic audit" and run **concurrently** with the PageSpeed call:
   signals) even though they exist — meta tags are unaffected. No
   rendered-browser fallback yet; documented, not solved.
 
+Phase 8 — Google Places business discovery (Text Search (New) only):
+
+- `/searches/new` — form (niche, city, state, zip, max results 1–60,
+  min rating, min review count, "exclude businesses with no website")
+  that runs a search and imports results.
+- `/searches` and `/searches/[searchId]` — past searches and one
+  search's imported businesses in a checkbox table with a "Queue
+  selected" action that creates `basic` `audit_jobs` rows — the
+  **only** place discovery leads to an audit job; `runSearch()` itself
+  never creates one.
+- `src/lib/places/places-client.ts` — `POST /v1/places:searchText`,
+  API key in `X-Goog-Api-Key` only, field mask in `X-Goog-FieldMask`,
+  `minRating` sent directly in the request body when set.
+- `src/lib/places/import-search.ts` — pages up to 3 times (capped at
+  20/page), applies `minReviews`/`excludeNoWebsite` as local
+  post-filters (the API has no such parameters), dedupes primarily by
+  exact `google_place_id` (reuse + refresh, never clobbering existing
+  non-blank data with a blank Google value), and otherwise always
+  creates a new business row — a secondary phone/domain match against
+  an existing business only attaches a flag-only `duplicate_warning`,
+  **never** an auto-merge.
+- **No reachability check during import** — `websites` rows are
+  created with every reachability field left `null`; syntactic URL
+  normalization only, no network request.
+- `run-audit.ts` gained a reachability step: since a Places-imported
+  website's `is_reachable` starts `null` (never checked) rather than
+  `true`/`false`, "Run basic audit" now runs `checkReachability()`
+  first when it sees `null`, persists the result, and only then
+  proceeds — verified end-to-end against a real imported business.
+
 Verified against the real dev Supabase project — see "Development
 fixtures" below for exactly what was tested and what exists in the
 database. Two Phase 3 bugs surfaced and were fixed during earlier
 testing — see `CLAUDE.md` for details (an overly-permissive URL parser,
 and an env-var normalization gap for a Supabase URL that already had
-`/rest/v1` appended).
+`/rest/v1` appended). A Phase 8 configuration issue (not an app bug)
+is also documented there: the Places API key initially returned `403`
+until billing was correctly attached to its Google Cloud project.
 
-No authentication, no Google Places/Make.com integration, no
-business-value/contactability/priority scores, no audit re-running, no
-automated worker, no AI API calls, no outreach automation, no deep/
-multi-page crawling yet.
+No authentication, no Make.com integration, no business-value/
+contactability/priority scores, no audit re-running, no automated
+worker, no AI API calls, no outreach automation, no deep/multi-page
+crawling yet.
 
 ## Development fixtures
 
@@ -182,6 +214,28 @@ fixtures (not cleaned up — kept intentionally for future testing):
 | Duplicate Submission Test (Phase 4 verify) | `https://example.com` | Used to verify concurrent Run-audit clicks only ever produce one audit row. Same result profile as the first fixture. |
 | HTML Scan Test - Divi Roofing Demo (Phase 7 verify) | `https://theultimatedivi.com/diviroofing/` (public WordPress/Divi marketplace demo, synthetic content) | Primary audit: `completed`, mobile performance 54, website-need score 38 from 5 point-earning findings (no contact form, no phone link, missing H1, missing meta description, no LocalBusiness schema) + 14 zero-point evidence findings (technology, trust signals, CTA, sitemap, etc.). Also used to exercise: an SSRF-blocked-redirect target (`ssrf_blocked`, Outcome B), a non-HTML content-type target (`unsupported_content_type`, Outcome D), and a transiently-erroring target (`http_error`) — 5 additional `audit_jobs` rows from that testing remain as historical evidence. |
 
+Three real Google Places searches (Phase 8 verify, all real business
+data — not synthetic) also exist in the dev project, all for **"coffee
+shop" in Portland, OR**:
+
+| Search | Parameters | Result |
+|---|---|---|
+| Search A | `maxResults=20`, `minRating=4` | `completed`. Found 20, imported 20 (2 with no website, left un-excluded), filtered 0. Confirmed `minRating` reaches Google — the lowest imported rating was 4.4. Confirmed no `websites` row got any reachability field populated during import. Real coincidental secondary-match warnings surfaced and were correctly flagged without merging: two physically distinct Stumptown Coffee Roasters locations sharing one website domain, and three unrelated businesses all listing an Instagram profile as their "website" (same root domain). |
+| Search B | identical to Search A, re-run immediately after | `completed`. Found 20, imported 20 — but the business row count stayed at 20 (0 duplicates created). Confirmed exact `google_place_id` dedup: every place reused its existing row, `last_places_sync_at` was refreshed on all of them, and no `duplicate_warning` was attached (exact matches skip secondary matching entirely). |
+| Search C | same niche/location, `minRating=4`, `minReviews=500`, `excludeNoWebsite=true` | `completed`. Found 20, filtered 13 (by review count and/or missing website), imported 7 — lowest imported review count was 511, and all 7 had a `websites` row. Its results page was then used to verify the full queue-selected flow: 3 businesses queued (one — "Good Coffee" — later used for the `is_reachable: null` → `checkReachability()` test below), a 4th queued in a follow-up submission, the 4 unselected businesses got no job, a duplicate resubmission of an already-queued business created no second job, and a submission mixing a syntactically-invalid id with a real business id from a *different, unrelated* search (a Phase 3 fixture) correctly queued only the valid+linked one. |
+
+"Good Coffee" (`http://goodwith.us/`, imported via Search C) is the
+fixture that verified the Phase 8 `run-audit.ts` reachability step:
+its `websites` row started with `is_reachable: null` (and every other
+reachability field `null`) immediately after import; clicking "Run
+basic audit" ran `checkReachability()` first, persisted
+`is_reachable: true` / `http_status: 200` / `https_enabled: true` /
+a one-hop HTTP→HTTPS `redirect_chain`, and then completed a full
+`completed` audit (mobile performance 78, homepage title "Good
+Coffee", 16 findings) in the same click — confirming a Places-imported
+business's first audit run no longer misreads "never checked" as
+"confirmed unreachable."
+
 ## Getting started
 
 ```bash
@@ -192,15 +246,18 @@ npm run dev
 
 Open http://localhost:3000.
 
-`.env.local` is now required for `/leads`, `/leads/new`, and
-`/leads/[businessId]` to work — they read/write Supabase directly.
+`.env.local` is now required for `/leads`, `/leads/new`,
+`/leads/[businessId]`, `/searches`, `/searches/new`, and
+`/searches/[searchId]` to work — they read/write Supabase directly.
 `GOOGLE_PAGESPEED_API_KEY` is required for the "Run basic audit" button
 to succeed on a reachable website; `APIFY_API_TOKEN` and
 `APIFY_SCREENSHOT_ACTOR_ID` are required for "Capture screenshots" to
 succeed (a website already known to be unreachable never calls either
 service, so both buttons render fine without those keys — they just
-can't complete their action). The root `/` dashboard still renders
-without any of it.
+can't complete their action); `GOOGLE_PLACES_API_KEY` is required for
+`/searches/new` to succeed (needs Places API (New) enabled and billing
+attached on its Google Cloud project). The root `/` dashboard still
+renders without any of it.
 
 ## Scripts
 
@@ -227,6 +284,15 @@ src/
         finding-status-button.tsx # Client Component: verify/dismiss/restore
         copy-summary-button.tsx   # Client Component: clipboard copy
         capture-screenshots-button.tsx # Client Component wrapping captureScreenshotsAction
+    searches/
+      page.tsx               # list of past searches
+      new/
+        page.tsx              # search form (Client Component)
+        actions.ts             # "use server" — the search Server Action, calls runSearch()
+      [searchId]/
+        page.tsx                # one search's imported businesses
+        actions.ts               # "use server" — queueSelectedAction
+        queue-selected-form.tsx  # Client Component: checkbox table + queue submit
   lib/
     env.ts        # zod-validated environment variables (client + server)
     supabase/
@@ -252,10 +318,15 @@ src/
     scoring/
       website-need-score.ts # pure function: findings -> score + breakdown (Phase 4, at creation time)
       effective-score.ts    # pure function: findings -> live score, excludes dismissed (Phase 5, display/copy time)
+    places/
+      normalize-phone.ts     # pure function: raw phone -> +1XXXXXXXXXX or best-effort digits
+      places-client.ts        # Places Text Search (New) fetch wrapper
+      import-search.ts         # orchestrates search -> page -> filter -> dedup/import
     validation/
       website-intake.ts    # zod schema for the intake form
+      search-intake.ts     # zod schema for the search form
     leads/
-      create-manual-lead.ts # orchestrates the Phase 3 writes
+      create-manual-lead.ts # orchestrates the Phase 3 writes (also sets phone_normalized, Phase 8)
 
 supabase/
   migrations/     # SQL migrations, applied manually for now (see below)
@@ -266,9 +337,9 @@ supabase/
 See `.env.example`. Supabase variables are validated as of Phase 1;
 `GOOGLE_PAGESPEED_API_KEY` (server-only) as of Phase 4;
 `APIFY_API_TOKEN` and `APIFY_SCREENSHOT_ACTOR_ID` (both server-only) as
-of Phase 6. Google Places and Make.com variables will be added in later
-phases as those integrations are implemented — do not add real keys
-for them yet.
+of Phase 6; `GOOGLE_PLACES_API_KEY` (server-only) as of Phase 8. A
+Make.com variable will be added in a later phase as that integration is
+implemented — do not add a real value for it yet.
 
 **Use a development Supabase project only.** Do not point this app at a
 production project or real customer data at this stage.
@@ -295,7 +366,14 @@ plain SQL files applied by hand rather than via `supabase db push`.
    `ALTER DEFAULT PRIVILEGES` for future tables, so — unlike after
    Phase 2 — a fresh database built from just the migration files does
    **not** need the manual grants fix described below.
-6. Repeat for any later migration files, in filename (timestamp) order.
+6. Repeat for
+   `supabase/migrations/20260719000000_phase8_places_discovery.sql` —
+   creates `searches` and `search_businesses` (both RLS enabled, no
+   policies), adds 13 Google Places columns to `businesses`, and
+   indexes `businesses.phone_normalized` /`websites.root_domain` for
+   the secondary duplicate-match check. Also re-asserts `service_role`
+   GRANTs on its two new tables.
+7. Repeat for any later migration files, in filename (timestamp) order.
 
 **Row level security:** every table has RLS **enabled with no
 policies**. This is intentional, not a placeholder to fill in later —

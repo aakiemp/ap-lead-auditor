@@ -1,11 +1,13 @@
 import "server-only";
 
+import { checkReachability, SsrfBlockedError as ReachabilitySsrfBlockedError } from "@/lib/audit/check-reachability";
 import {
   generateReachableFindings,
   generateUnreachableFinding,
   type GeneratedFinding,
 } from "@/lib/audit/generate-findings";
 import { generateHtmlFindings, generateSitemapRobotsFindings } from "@/lib/audit/generate-html-findings";
+import { InvalidUrlError, parseAndNormalizeInputUrl, stripTrackingParams } from "@/lib/audit/normalize-url";
 import { normalizePageSpeedResponse, type NormalizedPageSpeed } from "@/lib/audit/normalize-pagespeed";
 import { fetchMobilePageSpeed, PageSpeedError } from "@/lib/audit/pagespeed";
 import { scanHomepage, SsrfBlockedError, type HomepageScanResult } from "@/lib/audit/scan-homepage";
@@ -52,8 +54,12 @@ function emptyHomepageMeta(): HomepageMeta {
 
 /**
  * Processes one existing audit_jobs row: atomically claims it (only
- * from queued/pending), skips PageSpeed and the homepage scan entirely
- * for a website that isn't known-reachable, otherwise calls PageSpeed
+ * from queued/pending). If the website's reachability has never been
+ * checked (is_reachable is null — true for every business imported via
+ * Google Places discovery, which intentionally defers this check; see
+ * CLAUDE.md), runs checkReachability() now and persists the result
+ * before proceeding. Skips PageSpeed and the homepage scan entirely for
+ * a website that isn't known-reachable, otherwise calls PageSpeed
  * mobile and scans the homepage HTML CONCURRENTLY (independent
  * operations against the same site).
  *
@@ -95,19 +101,106 @@ export async function runAudit(jobId: string): Promise<RunAuditResult> {
     return { ok: false, error: "This audit is already running or has already finished." };
   }
 
-  const { data: website, error: websiteError } = await supabase
+  const { data: fetchedWebsite, error: websiteError } = await supabase
     .from("websites")
     .select("*")
     .eq("id", job.website_id)
     .maybeSingle();
 
-  if (websiteError || !website) {
+  if (websiteError || !fetchedWebsite) {
     console.error("[runAudit] website lookup failed:", websiteError);
     await supabase
       .from("audit_jobs")
       .update({ status: "failed", error_message: "website_not_found" })
       .eq("id", job.id);
     return { ok: false, error: "Could not find the website record for this audit." };
+  }
+
+  let website = fetchedWebsite;
+
+  // A website is only ever null (never true/false) when it was
+  // imported via Google Places discovery, which intentionally skips
+  // the reachability check at import time (see CLAUDE.md). Run it now,
+  // the first time this business's basic audit actually executes, and
+  // persist the result before deciding how to proceed — null must not
+  // be treated as "confirmed unreachable".
+  if (website.is_reachable === null) {
+    let startUrl: URL;
+    try {
+      startUrl = parseAndNormalizeInputUrl(website.input_url).url;
+    } catch (err) {
+      console.error(
+        "[runAudit] stored input_url is not a valid URL:",
+        err instanceof InvalidUrlError ? err.message : err,
+      );
+      await supabase
+        .from("audit_jobs")
+        .update({ status: "failed", error_message: "invalid_target_url" })
+        .eq("id", job.id);
+      return { ok: false, error: "This website's URL could not be audited." };
+    }
+
+    let reachability;
+    try {
+      reachability = await checkReachability(startUrl);
+    } catch (err) {
+      if (err instanceof ReachabilitySsrfBlockedError) {
+        reachability = {
+          isReachable: false,
+          finalUrl: null,
+          httpStatus: null,
+          httpsEnabled: null,
+          redirectCount: 0,
+          redirectChain: [] as string[],
+          httpToHttpsRedirect: false,
+          failureReason: "ssrf_blocked",
+        };
+      } else {
+        console.error("[runAudit] reachability check failed unexpectedly:", err);
+        reachability = {
+          isReachable: false,
+          finalUrl: null,
+          httpStatus: null,
+          httpsEnabled: null,
+          redirectCount: 0,
+          redirectChain: [] as string[],
+          httpToHttpsRedirect: false,
+          failureReason: "check_failed",
+        };
+      }
+    }
+
+    const finalUrl = reachability.finalUrl
+      ? stripTrackingParams(new URL(reachability.finalUrl))
+      : null;
+
+    const { data: updatedWebsite, error: updateError } = await supabase
+      .from("websites")
+      .update({
+        final_url: finalUrl,
+        is_reachable: reachability.isReachable,
+        http_status: reachability.httpStatus,
+        https_enabled: reachability.httpsEnabled,
+        redirect_count: reachability.redirectCount,
+        redirect_chain: reachability.redirectChain,
+        http_to_https_redirect: reachability.httpToHttpsRedirect,
+        failure_reason: reachability.failureReason,
+        last_checked_at: new Date().toISOString(),
+      })
+      .eq("id", website.id)
+      .select("*")
+      .single();
+
+    if (updateError || !updatedWebsite) {
+      console.error("[runAudit] failed to persist reachability check:", updateError);
+      await supabase
+        .from("audit_jobs")
+        .update({ status: "failed", error_message: "reachability_write_failed" })
+        .eq("id", job.id);
+      return { ok: false, error: "Could not save the reachability check. Please try again." };
+    }
+
+    website = updatedWebsite;
   }
 
   const startedAt = new Date().toISOString();
