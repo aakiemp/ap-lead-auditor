@@ -58,10 +58,16 @@ export function generateUnreachableFinding(website: WebsiteFactsForFindings): Ge
  * website facts (Phase 3) plus normalized PageSpeed mobile data
  * (Phase 4). Pure function — no I/O. Only one mobile-performance
  * range rule can trigger, by construction (if/else if below).
+ *
+ * `pagespeed` is nullable as of Phase 7: when PageSpeed failed but the
+ * site is still reachable (the "partial" audit outcome), the
+ * PageSpeed-derived checks are skipped entirely rather than evaluated
+ * against missing data — only the website-fact-based check (HTTPS)
+ * still applies.
  */
 export function generateReachableFindings(
   website: WebsiteFactsForFindings,
-  pagespeed: NormalizedPageSpeed,
+  pagespeed: NormalizedPageSpeed | null,
 ): GeneratedFinding[] {
   const findings: GeneratedFinding[] = [];
 
@@ -78,6 +84,10 @@ export function generateReachableFindings(
       points: 20,
       ruleId: "no_https",
     });
+  }
+
+  if (!pagespeed) {
+    return findings;
   }
 
   if (pagespeed.performanceScore !== null) {

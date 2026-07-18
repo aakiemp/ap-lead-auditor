@@ -211,6 +211,13 @@ export default async function LeadDetailPage({
               </p>
             ) : null}
 
+            {latestAudit.status === "partial" ? (
+              <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                This audit is partial — one of the PageSpeed check or homepage scan did not complete.
+                See findings below for details.
+              </p>
+            ) : null}
+
             {pagespeed ? (
               <>
                 <div className="mt-4 grid grid-cols-4 gap-3">
@@ -229,6 +236,20 @@ export default async function LeadDetailPage({
                 </dl>
               </>
             ) : null}
+          </section>
+        ) : null}
+
+        {latestAudit ? (
+          <section className="rounded-lg border border-zinc-200 bg-white p-6">
+            <h2 className="text-sm font-medium text-zinc-900">Homepage HTML</h2>
+            <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
+              <Detail label="Page title" value={latestAudit.homepage_title} />
+              <Detail label="Meta description" value={latestAudit.meta_description} />
+              <Detail label="Canonical URL" value={latestAudit.canonical_url} />
+              <Detail label="Robots meta" value={latestAudit.robots_meta} />
+              <Detail label="H1 text" value={latestAudit.h1_text} />
+              <Detail label="H1 count" value={latestAudit.h1_count?.toString() ?? null} />
+            </dl>
           </section>
         ) : null}
 

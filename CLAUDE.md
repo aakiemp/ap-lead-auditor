@@ -140,7 +140,7 @@ schema are `verified`, `likely`, `manual_review` — use them honestly.
 | **4** | PageSpeed integration (mobile only), normalization (`pagespeed_mobile`), 7 objective finding rules, website-need scoring, manual "Run basic audit" button (atomic claim, no worker), audit results on the lead detail page |
 | **5** | Copy-to-AI plain-text summary (`build-summary-text.ts`), finding verify/dismiss/restore actions (`updateFindingStatusAction`), live-computed effective website-need score (`effective-score.ts`) that excludes dismissed findings — `audit_scores` stays immutable |
 | **6** | Mobile + desktop homepage screenshots via Apify (`apify/screenshot-url`), private Supabase Storage bucket, signed-URL display, separate "Capture screenshots" button (`screenshots` table added by migration) |
-| 7 | Rule-based HTML scan: CTA detection, contact-form detection, trust signals, tech hints, freshness signals |
+| **7** | Rule-based homepage HTML scan (Cheerio, plain fetch — no rendered browser) integrated into "Run basic audit": title/meta/H1/CTA/contact-form/trust-signal/technology/schema/sitemap detection, 14 new scoring rules, concurrent PageSpeed+HTML with 4-outcome handling including the new `partial` audit status |
 | 8 | Google Places discovery: search form, business import, dedup |
 | 9 | Async job boundary made real: `/api/jobs/claim`, `/api/jobs/update`; local worker script |
 | 10 | Make.com scenarios for Places + PageSpeed + Apify batches |
@@ -160,7 +160,7 @@ add it preemptively; wait for explicit approval.
 
 ## Current phase
 
-**Phase 1 through Phase 6 — complete and fully verified.**
+**Phase 1 through Phase 7 — complete and fully verified.**
 
 Phase 3 added the manual single-website intake flow: `/leads/new` (a
 Next.js Server Action, not a public API route), `/leads` (list),
@@ -281,11 +281,80 @@ and additive — never touches `audits`/`audit_jobs`/`audit_findings`/
   built from the migration files alone no longer needs the manual
   out-of-band fix Phase 3 required.
 
+Phase 7 added rule-based homepage HTML scanning, integrated into "Run
+basic audit" (not a separate button — this is free and fast, unlike
+Apify screenshots) and run **concurrently** with the PageSpeed call:
+- `src/lib/audit/fetch-html.ts` — bounded, SSRF-guarded GET (same
+  manual-redirect-revalidation pattern as `check-reachability.ts`, but
+  reads the body: 8s timeout, 5-redirect cap, 2MB cap, requires
+  `text/html`/`application/xhtml+xml` content type before reading).
+  Plain fetch only — no headless browser, no page-script execution.
+- `src/lib/audit/scan-homepage.ts` — Cheerio parsing (new dependency)
+  of title/meta/canonical/robots/H1, CTA phrase matching (fixed
+  16-phrase list), contact-page/phone/email link detection, contact
+  form + provider + field counts, testimonials, trust-signal keywords,
+  social links, copyright year, 14 technology signatures, LocalBusiness
+  JSON-LD (parsed defensively — malformed JSON-LD is skipped, never
+  fails the scan). `<script>`/`<style>`/`<noscript>`/`<template>`
+  content is stripped before any text-based keyword matching. No raw
+  HTML is ever stored — only short (~200 char), tag-stripped evidence
+  snippets on individual findings.
+- `src/lib/audit/sitemap-robots.ts` — independent, optional
+  `/sitemap.xml` + `/robots.txt` checks; a failure in either never
+  affects the other or the homepage scan.
+- `src/lib/audit/generate-html-findings.ts` — pure functions
+  (`generateHtmlFindings`, `generateSitemapRobotsFindings`) turning
+  scan results into findings. 14 new scoring rules (missing title/meta
+  /H1, multiple H1, no CTA, no phone link, no contact form, form >10
+  fields, no testimonials, no trust signals, stale copyright ≥3 years,
+  no LocalBusiness schema, no privacy-policy link, no sitemap) — a rule
+  only ever fires when its detector actually completed. Presence
+  findings are stored too, at 0 points, as outreach evidence.
+- **Four PageSpeed/HTML-scan outcomes**, since Phase 7 changed the
+  original Phase 4 "discard HTML results if PageSpeed fails" plan to
+  instead preserve whichever succeeded:
+  - **A** both succeed → `audits.status`/`job.status` = `completed`,
+    full findings, full score
+  - **B** PageSpeed only → `completed`, PageSpeed findings preserved,
+    HTML metadata stays null, one `confidence: manual_review` note
+    that homepage content couldn't be fully reviewed, **no
+    absence-based HTML findings**
+  - **C** HTML only → `audits.status`/`job.status` = **`partial`**
+    (already a valid value in both enums since Phase 2 — no migration
+    needed), HTML findings + the website-fact-based HTTPS check
+    preserved, `raw_pagespeed_mobile`/`pagespeed_mobile` stay null, one
+    `confidence: verified` note that PageSpeed was unavailable, score
+    from HTML + website findings only
+  - **D** both fail → `failed`, no findings/score at all (matches the
+    original Phase 4 "both fail" semantics exactly), sanitized
+    `error_message`
+  - All four outcomes share one write path (`writeAuditOutcome` in
+    `run-audit.ts`), replacing the separate `finishSuccessfulAudit`/
+    `createFailedAudit` functions from Phase 4.
+- `generateReachableFindings` (Phase 4, `generate-findings.ts`) was
+  modified to accept `pagespeed: NormalizedPageSpeed | null` — when
+  null (outcome C), only the website-fact-based HTTPS check applies;
+  the four PageSpeed-score-derived checks are skipped rather than
+  evaluated against missing data. This was a necessary small change
+  beyond the phase's originally-listed file list, flagged at the time.
+- **Known, accepted limitation**: plain HTTP fetch cannot see content
+  injected by client-side JavaScript. For a heavily client-rendered
+  (SPA-style) site, body-content detectors (CTA, forms, trust signals)
+  may under-report even though the site genuinely has that content.
+  Meta tags (title/description/canonical/robots) are unaffected — those
+  are reliably present in server-rendered HTML regardless of framework.
+  No rendered-browser fallback exists yet; this is deferred, not solved.
+- Test lead: **Divi Roofing Service Layout Pack** demo
+  (`https://theultimatedivi.com/diviroofing/`) — a public WordPress/Divi
+  marketplace demo with synthetic placeholder content, not a real
+  business. See `README.md`'s "Development fixtures" for what it
+  exercised.
+
 All phases were confirmed via full end-to-end testing against the real
 dev Supabase project — see `README.md`'s "Development fixtures"
 section for the exact verified records.
 
-**Do not begin Phase 7 without explicit approval.**
+**Do not begin Phase 8 without explicit approval.**
 
 ## Postponed (not yet implemented — do not add without explicit approval)
 
@@ -295,11 +364,16 @@ section for the exact verified records.
   phase" — but real per-user policies wait for auth)
 - Seed data
 - Desktop PageSpeed (mobile only is implemented as of Phase 4)
-- External *content* fetching (title/meta/H1/CTA/form/trust-signal
-  scraping) — reachability-only fetching (no body reads) is implemented
-  as of Phase 3; homepage HTML fetch/parse for title/meta/H1 is
-  deliberately deferred to the broader HTML-scan phase (Phase 7) rather
-  than built once for Phase 4 and again for Phase 7
+- Deep/multi-page crawling (Phase 7 scans the homepage only, one page)
+- A rendered-browser fallback for JS-heavy sites (documented, accepted
+  limitation as of Phase 7 — see "Current phase")
+- Phone-number-in-text vs. tel:-link comparison ("phone number was
+  displayed as plain text rather than a telephone link" — Phase 7 only
+  detects presence/absence of a tel: link, not this fuller comparison)
+- Contact-page broken-link verification (Phase 7 only detects whether a
+  contact-page link exists, not whether it resolves)
+- Contact-information mismatch checking (needs Google Places data —
+  Phase 8+)
 - PageSpeed fields beyond the 4 category scores + 5 Core Web Vital
   metrics: INP, TTFB, page weight/request count, itemized diagnostic
   audits (render-blocking resources, unused JS/CSS, image issues, etc.)

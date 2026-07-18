@@ -11,7 +11,7 @@ against.
 
 ## Current status
 
-**Phase 1 through Phase 6 — complete and fully verified end-to-end.**
+**Phase 1 through Phase 7 — complete and fully verified end-to-end.**
 
 Phase 1 — bare project scaffold:
 
@@ -119,6 +119,45 @@ Phase 6 — mobile + desktop homepage screenshots via Apify:
   feature not being used at all) never touches `audits`, `audit_jobs`,
   `audit_findings`, or `audit_scores`.
 
+Phase 7 — rule-based homepage HTML scanning, integrated into "Run
+basic audit" and run **concurrently** with the PageSpeed call:
+
+- Plain server-side HTTP fetch (`src/lib/audit/fetch-html.ts`, reusing
+  the SSRF guard with manual redirect revalidation, 8s timeout, 5
+  redirects, 2MB cap, HTML-only content type) + **Cheerio** parsing
+  (`src/lib/audit/scan-homepage.ts`) — no headless browser, no page
+  scripts executed, no forms submitted.
+- Detects: title, meta description, canonical URL, robots meta, H1
+  text/count, primary CTA (fixed 16-phrase list), contact-page/phone/
+  email links, contact form (+ provider, field counts, submit text),
+  testimonials, trust-signal keywords, social links, copyright year,
+  14 technology signatures, LocalBusiness JSON-LD (parsed defensively —
+  malformed JSON-LD never fails the scan), privacy-policy/terms links.
+- `src/lib/audit/sitemap-robots.ts` — independent `/sitemap.xml` +
+  `/robots.txt` checks; a failure in either never affects the other or
+  the homepage scan.
+- **No raw HTML is ever stored** — parsed in memory, discarded; only
+  short tag-stripped evidence snippets (~200 chars) persist.
+- 14 new scoring rules — a rule only fires when its detector actually
+  completed. Presence findings are stored too, at 0 points, as
+  outreach evidence (not just problems flagged).
+- **Four PageSpeed/HTML outcomes**, since a Phase 7 requirement changed
+  the original plan (discard HTML if PageSpeed fails) to instead
+  preserve whichever succeeded:
+  - Both succeed → `completed`, full findings, full score
+  - PageSpeed only → `completed`, PageSpeed findings preserved, one
+    manual-review note that homepage content wasn't fully reviewed, no
+    absence-based HTML findings
+  - HTML only → **`partial`** (an already-valid status since Phase 2 —
+    no migration needed), HTML + HTTPS findings preserved, one note
+    that PageSpeed was unavailable, score from what succeeded
+  - Both fail → `failed`, no findings/score at all
+- **Known, accepted limitation**: plain HTTP fetch can't see
+  JavaScript-injected content. A heavily client-rendered (SPA-style)
+  site may under-report body-content signals (CTA, forms, trust
+  signals) even though they exist — meta tags are unaffected. No
+  rendered-browser fallback yet; documented, not solved.
+
 Verified against the real dev Supabase project — see "Development
 fixtures" below for exactly what was tested and what exists in the
 database. Two Phase 3 bugs surfaced and were fixed during earlier
@@ -128,12 +167,12 @@ and an env-var normalization gap for a Supabase URL that already had
 
 No authentication, no Google Places/Make.com integration, no
 business-value/contactability/priority scores, no audit re-running, no
-automated worker, no AI API calls, no outreach automation, no HTML
-scanning/crawling yet.
+automated worker, no AI API calls, no outreach automation, no deep/
+multi-page crawling yet.
 
 ## Development fixtures
 
-Three test leads exist in the dev Supabase project as known-good
+Four test leads exist in the dev Supabase project as known-good
 fixtures (not cleaned up — kept intentionally for future testing):
 
 | Business | Website | Result |
@@ -141,6 +180,7 @@ fixtures (not cleaned up — kept intentionally for future testing):
 | Reachable Site Test (Phase 3 verify) | `https://example.com` | Audit completed. Performance 100, Accessibility 96, SEO 80, Best practices 96. 0 findings, website-need score 0. Also used in Phase 6: has both a mobile and desktop `screenshots` row (verified duplicate-safe on a second capture attempt). |
 | Unreachable Host Test (Phase 3 verify) | an `.invalid` hostname | Audit completed without a PageSpeed call. 1 finding ("Website unreachable", critical). Website-need score 35. Also used in Phase 5 to test dismiss → restore → verify; its one finding's `status` ended the test cycle as `verified` (points/description unchanged throughout; the stored `audit_scores` row was never touched). |
 | Duplicate Submission Test (Phase 4 verify) | `https://example.com` | Used to verify concurrent Run-audit clicks only ever produce one audit row. Same result profile as the first fixture. |
+| HTML Scan Test - Divi Roofing Demo (Phase 7 verify) | `https://theultimatedivi.com/diviroofing/` (public WordPress/Divi marketplace demo, synthetic content) | Primary audit: `completed`, mobile performance 54, website-need score 38 from 5 point-earning findings (no contact form, no phone link, missing H1, missing meta description, no LocalBusiness schema) + 14 zero-point evidence findings (technology, trust signals, CTA, sitemap, etc.). Also used to exercise: an SSRF-blocked-redirect target (`ssrf_blocked`, Outcome B), a non-HTML content-type target (`unsupported_content_type`, Outcome D), and a transiently-erroring target (`http_error`) — 5 additional `audit_jobs` rows from that testing remain as historical evidence. |
 
 ## Getting started
 
@@ -205,6 +245,10 @@ src/
       build-summary-text.ts  # pure function: data -> copy-to-AI plain text
       apify-screenshot.ts     # Apify REST client: run actor, fetch + validate image
       capture-screenshots.ts  # orchestrates parallel mobile+desktop capture, upload, insert
+      fetch-html.ts            # bounded, SSRF-guarded GET that reads the response body
+      scan-homepage.ts         # Cheerio parsing: title/meta/CTA/forms/trust/tech/schema
+      sitemap-robots.ts        # independent /sitemap.xml + /robots.txt checks
+      generate-html-findings.ts # pure functions: scan result -> findings
     scoring/
       website-need-score.ts # pure function: findings -> score + breakdown (Phase 4, at creation time)
       effective-score.ts    # pure function: findings -> live score, excludes dismissed (Phase 5, display/copy time)
