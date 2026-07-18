@@ -11,7 +11,7 @@ against.
 
 ## Current status
 
-**Phase 1 through Phase 8 — complete and fully verified end-to-end.**
+**Phase 1 through Phase 9 — complete and fully verified end-to-end.**
 
 Phase 1 — bare project scaffold:
 
@@ -197,10 +197,45 @@ and an env-var normalization gap for a Supabase URL that already had
 is also documented there: the Places API key initially returned `403`
 until billing was correctly attached to its Google Cloud project.
 
+Phase 9 — audit queue dashboard (`/queue`), manual batch processing
+only, no background worker, no schema change:
+
+- Five sections (Queued / Running / Partial / Failed / Completed).
+  Queued jobs are checkbox-selectable for **"Run selected audits"**
+  or **"Run next batch"** (oldest-first, runs all available if fewer
+  exist than the requested size — no error). Default batch size 3,
+  max 10.
+- `src/lib/audit/run-audit-batch.ts` — bounded-concurrency batch
+  runner, a fixed non-configurable concurrency of **2** (kept
+  conservative since the whole batch runs inside one synchronous
+  Server Action request). Reuses the existing `runAudit()` unchanged
+  for every job; one job's failure or thrown exception never aborts
+  or skips a sibling job.
+- `src/lib/audit/retry-job.ts` — retries a `failed`/`partial` job by
+  atomically resetting it back to `queued` and immediately calling
+  `runAudit()` again. Reuses the existing `audit_jobs` row (the
+  current queue slot); every retry still inserts a brand-new,
+  immutable `audits` row and never touches a prior one.
+- `run-audit.ts`'s existing atomic claim now also increments
+  `attempt` by exactly one per real execution — a job's first-ever
+  claim leaves it at its INSERT default of 1; every retry-driven
+  re-claim after that increments it. No separate increment step, no
+  schema change, no way for one retry click to double-increment it.
+- A claim conflict (or a submitted id that's invalid, nonexistent, or
+  not `audit_depth = 'basic'`) is a `skipped` count only — the
+  database row is left completely untouched. An unreachable website
+  still counts as `completed` (the audit genuinely succeeded in
+  producing a verified "unreachable" finding).
+- A `Running` job whose `claimed_at` is over 15 minutes old shows a
+  "Possibly stale" badge — informational only, nothing resets or
+  reruns it automatically.
+- Nothing runs on page load; every batch/retry needs an explicit
+  click, and all execution controls on the page disable together
+  while any one action is in flight.
+
 No authentication, no Make.com integration, no business-value/
-contactability/priority scores, no audit re-running, no automated
-worker, no AI API calls, no outreach automation, no deep/multi-page
-crawling yet.
+contactability/priority scores, no automated worker, no AI API calls,
+no outreach automation, no deep/multi-page crawling yet.
 
 ## Development fixtures
 
@@ -236,6 +271,35 @@ Coffee", 16 findings) in the same click — confirming a Places-imported
 business's first audit run no longer misreads "never checked" as
 "confirmed unreachable."
 
+Ten "Queue Test" leads (Phase 9 verify, created via the ordinary
+`/leads/new` flow specifically to populate `/queue` with fast,
+deterministic real outcomes) also exist in the dev project:
+
+| Lead | Website | Result |
+|---|---|---|
+| Queue Test A | `https://example.com` | Run alone to verify a single-job batch. `completed`, performance 100. `attempt` stayed at 1 (first execution). Later resubmitted alongside an already-completed id in the same batch to confirm a completed job is never rerun — correctly `skipped`, no second `audits` row. |
+| Queue Test B, C, D | `https://example.org`, `https://example.net`, `https://www.iana.org` | Run together with F in one 4-job batch. All three `completed`. Used with F to verify bounded concurrency. |
+| Queue Test E — Unreachable | an `.invalid` hostname | `completed` with one verified "Website unreachable" finding (score 35) — confirms unreachable counts as `completed`, not a separate bucket. Also the "Run next batch" fixture: requested batch size 6 against only 4 available queued jobs, ran all 4, reported `selected: 4`, no error. |
+| Queue Test F — NonHTML | `https://api.github.com` (returns JSON) | `failed` (Outcome D — both PageSpeed and the homepage scan genuinely fail on a non-HTML resource). Retried twice: `attempt` read `1 → 2 → 3`, exactly one increment per real execution; the original `audits` row stayed byte-for-byte unchanged both times, and each retry added exactly one new row (3 total). |
+| Queue Test G — Concurrent Claim | `https://example.com` | Two near-simultaneous requests submitted "Run selected audits" for this single job. Exactly one returned `claimed: 1, completed: 1`; the other returned `claimed: 0, skipped: 1` — confirmed via the database afterward: exactly one `audits` row, `attempt` still 1 (no double-increment from the race). |
+| Queue Test H — Dup Test | `https://example.com` | Submitted twice in the same batch (alongside Queue Test A's already-completed id) to confirm client-submitted duplicate ids collapse to one execution before touching the database — `selected: 2` (deduplicated), not 3. |
+| Queue Test I — Invalid Mix | `https://example.org` | Submitted alongside a syntactically-invalid id and a synthetic `audit_depth: 'discovery_only'` job (inserted directly for this one test, then removed) — both were safely rejected/skipped without erroring the batch; the non-`basic` job's row was left completely untouched. |
+| Queue Test J — Stale Fixture | `https://example.net` | Its job was forced directly into `status: 'auditing'` with a `claimed_at` 20 minutes in the past. `/queue` correctly showed it under **Running** with a "Possibly stale" badge; simply loading the page never reset or reran it. Left in this state intentionally as a fixture for a future force-reset feature. |
+
+The two pre-existing `failed` `audit_jobs` rows from Phase 7 testing
+(the Divi Roofing demo's `unsupported_content_type`/`http_error`
+exercises) were also confirmed to still appear correctly in `/queue`'s
+Failed section and remain available to retry — left untouched as
+historical evidence.
+
+**Known testing limitation**: a genuine Outcome C (`partial`) audit —
+the homepage scan succeeds but PageSpeed genuinely fails on an
+otherwise-reachable site — proved impractical to reproduce on demand
+against real external targets in this session. `partial` batch
+classification was verified by code inspection instead (it flows
+through the exact same, already-proven `writeAuditOutcome()` return
+path as `completed`/`failed`), not by a live trigger.
+
 ## Getting started
 
 ```bash
@@ -247,17 +311,19 @@ npm run dev
 Open http://localhost:3000.
 
 `.env.local` is now required for `/leads`, `/leads/new`,
-`/leads/[businessId]`, `/searches`, `/searches/new`, and
-`/searches/[searchId]` to work — they read/write Supabase directly.
-`GOOGLE_PAGESPEED_API_KEY` is required for the "Run basic audit" button
-to succeed on a reachable website; `APIFY_API_TOKEN` and
-`APIFY_SCREENSHOT_ACTOR_ID` are required for "Capture screenshots" to
-succeed (a website already known to be unreachable never calls either
-service, so both buttons render fine without those keys — they just
-can't complete their action); `GOOGLE_PLACES_API_KEY` is required for
-`/searches/new` to succeed (needs Places API (New) enabled and billing
-attached on its Google Cloud project). The root `/` dashboard still
-renders without any of it.
+`/leads/[businessId]`, `/searches`, `/searches/new`,
+`/searches/[searchId]`, and `/queue` to work — they read/write
+Supabase directly. `GOOGLE_PAGESPEED_API_KEY` is required for the "Run
+basic audit" button (and every `/queue` batch/retry action, which all
+call the same underlying code) to succeed on a reachable website;
+`APIFY_API_TOKEN` and `APIFY_SCREENSHOT_ACTOR_ID` are required for
+"Capture screenshots" to succeed (a website already known to be
+unreachable never calls either service, so both buttons render fine
+without those keys — they just can't complete their action);
+`GOOGLE_PLACES_API_KEY` is required for `/searches/new` to succeed
+(needs Places API (New) enabled and billing attached on its Google
+Cloud project). `/queue` introduces no new environment variable. The
+root `/` dashboard still renders without any of it.
 
 ## Scripts
 
@@ -293,6 +359,10 @@ src/
         page.tsx                # one search's imported businesses
         actions.ts               # "use server" — queueSelectedAction
         queue-selected-form.tsx  # Client Component: checkbox table + queue submit
+    queue/
+      page.tsx           # queue dashboard — 5 status sections, stale-job warning
+      actions.ts          # "use server" — runSelectedAudits/runNextBatch/retryJob actions
+      queue-table.tsx      # Client Component: selection, batch size, shared pending state
   lib/
     env.ts        # zod-validated environment variables (client + server)
     supabase/
@@ -307,7 +377,10 @@ src/
       pagespeed.ts          # PageSpeed API client (timeout + retry)
       normalize-pagespeed.ts # raw Lighthouse JSON -> normalized fields
       generate-findings.ts  # pure function: website+pagespeed -> findings
-      run-audit.ts           # orchestrates claim -> pagespeed -> writes
+      run-audit.ts           # orchestrates claim (+ attempt increment) -> pagespeed -> writes
+      run-audit-batch.ts      # bounded-concurrency (2) batch runner over runAudit()
+      retry-job.ts             # atomic failed/partial -> queued reset, then runAudit()
+      stale-job.ts              # pure function: is a Running job's claim old enough to flag?
       build-summary-text.ts  # pure function: data -> copy-to-AI plain text
       apify-screenshot.ts     # Apify REST client: run actor, fetch + validate image
       capture-screenshots.ts  # orchestrates parallel mobile+desktop capture, upload, insert
@@ -325,6 +398,7 @@ src/
     validation/
       website-intake.ts    # zod schema for the intake form
       search-intake.ts     # zod schema for the search form
+      queue-batch.ts        # batch size schema/limits (default 3, max 10)
     leads/
       create-manual-lead.ts # orchestrates the Phase 3 writes (also sets phone_normalized, Phase 8)
 

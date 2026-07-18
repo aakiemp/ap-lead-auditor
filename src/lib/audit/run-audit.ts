@@ -20,8 +20,8 @@ import type { Json } from "@/lib/supabase/database.types";
 type ServiceClient = ReturnType<typeof createSupabaseServiceRoleClient>;
 
 export type RunAuditResult =
-  | { ok: true; auditId: string }
-  | { ok: false; error: string };
+  | { ok: true; auditId: string; status: "completed" | "partial" | "failed" }
+  | { ok: false; error: string; alreadyClaimed?: boolean };
 
 const CLAIMED_BY = "manual-ui";
 
@@ -77,9 +77,44 @@ function emptyHomepageMeta(): HomepageMeta {
  * A failure after the audits row is created deletes it (cascades clean
  * up any partial children) and marks the job failed — mirrors the
  * Phase 3/4 write pattern rather than a transactional RPC.
+ *
+ * attempt (Phase 9): incremented by exactly one per actual execution,
+ * entirely inside this function's own atomic claim step — a job's
+ * first-ever claim leaves attempt at its INSERT default of 1
+ * unchanged; every claim after that (i.e. every retry, since
+ * retryAuditJob() resets status to queued but never touches attempt
+ * itself) increments it by one. Only the claim that actually wins the
+ * status-guarded UPDATE ever has its attempt value persisted, so a
+ * losing concurrent claim attempt (see alreadyClaimed below) can never
+ * cause a double-increment.
  */
 export async function runAudit(jobId: string): Promise<RunAuditResult> {
   const supabase = createSupabaseServiceRoleClient();
+
+  // Peek at claimed_at to decide whether this claim is the job's very
+  // first execution (claimed_at still null — attempt stays at its
+  // INSERT default of 1, unchanged) or a retry-driven re-claim
+  // (claimed_at already set from a prior run — attempt increments by
+  // one). This keeps the increment entirely inside this single atomic
+  // claim step (see CLAUDE.md) rather than splitting it across a
+  // separate retry-reset step, so a retry can never double-increment:
+  // retryAuditJob() never touches `attempt` itself, only this claim
+  // does, and it only runs once per retry click. The peek's read is
+  // not itself transactionally tied to the claim UPDATE below, but
+  // that's safe here — the UPDATE's own `status IN (...)` guard is
+  // the actual correctness mechanism; only the claim that wins the
+  // race ever has its `attempt` value written.
+  const { data: preClaim } = await supabase
+    .from("audit_jobs")
+    .select("attempt, claimed_at")
+    .eq("id", jobId)
+    .maybeSingle();
+
+  const nextAttempt = preClaim
+    ? preClaim.claimed_at
+      ? preClaim.attempt + 1
+      : preClaim.attempt
+    : 1;
 
   const { data: job, error: claimError } = await supabase
     .from("audit_jobs")
@@ -87,6 +122,7 @@ export async function runAudit(jobId: string): Promise<RunAuditResult> {
       status: "auditing",
       claimed_at: new Date().toISOString(),
       claimed_by: CLAIMED_BY,
+      attempt: nextAttempt,
     })
     .eq("id", jobId)
     .in("status", ["queued", "pending"])
@@ -98,7 +134,11 @@ export async function runAudit(jobId: string): Promise<RunAuditResult> {
     return { ok: false, error: "Could not start this audit right now. Please try again." };
   }
   if (!job) {
-    return { ok: false, error: "This audit is already running or has already finished." };
+    return {
+      ok: false,
+      error: "This audit is already running or has already finished.",
+      alreadyClaimed: true,
+    };
   }
 
   const { data: fetchedWebsite, error: websiteError } = await supabase
@@ -437,7 +477,7 @@ async function writeAuditOutcome(
     if (jobUpdateError) {
       console.error("[runAudit] failed to mark job status after failed audit:", jobUpdateError);
     }
-    return { ok: true, auditId: audit.id };
+    return { ok: true, auditId: audit.id, status: outcome.jobStatus };
   }
 
   if (outcome.findings.length > 0) {
@@ -496,5 +536,5 @@ async function writeAuditOutcome(
     console.error("[runAudit] audit succeeded but failed to mark job status:", jobUpdateError);
   }
 
-  return { ok: true, auditId: audit.id };
+  return { ok: true, auditId: audit.id, status: outcome.jobStatus };
 }

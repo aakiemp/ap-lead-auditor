@@ -160,7 +160,7 @@ add it preemptively; wait for explicit approval.
 
 ## Current phase
 
-**Phase 1 through Phase 8 — complete and fully verified.**
+**Phase 1 through Phase 9 — complete and fully verified.**
 
 Phase 3 added the manual single-website intake flow: `/leads/new` (a
 Next.js Server Action, not a public API route), `/leads` (list),
@@ -437,11 +437,116 @@ calls):
   data, not synthetic) — see `README.md`'s "Development fixtures" for
   what was verified.
 
+Phase 9 added an audit queue dashboard (`/queue`) for manual, batched
+processing of existing `basic` `audit_jobs` rows — no background
+worker, no schema change:
+- Five sections — **Queued**, **Running** (the `auditing` DB status),
+  **Partial**, **Failed**, **Completed** — each job shows business,
+  website, source/search (derived at query time via `businesses.source`
+  and, for Places-imported businesses, the most recently linked
+  `searches` row — no new column), queue date, last attempt
+  (`claimed_at`), attempt count, and status.
+- **Queued** jobs are checkbox-selectable for **"Run selected
+  audits"** (server-validated: UUID shape, deduplicated, capped at 10)
+  or **"Run next batch"** (server picks the oldest N queued/pending
+  jobs by `created_at`; if fewer than N are available it runs all of
+  them and reports the real count — no error). Default batch size 3,
+  max 10, both enforced server-side
+  (`src/lib/validation/queue-batch.ts`); if fewer are available than
+  requested, all available run and the summary's `selected` reflects
+  the real count.
+- `src/lib/audit/run-audit-batch.ts` — `runAuditBatch()` runs a fixed,
+  **non-configurable concurrency of 2** (a hardcoded constant, not a
+  UI control — kept conservative because the batch runs inside one
+  synchronous Server Action request; there's no background worker yet
+  to relax this against). A small worker-pool pulls job ids off a
+  shared index in order (never an unbounded `Promise.all` across the
+  whole selection), calling the existing, unmodified `runAudit()` for
+  each — no duplication of the claim/reachability/PageSpeed/HTML-scan
+  logic. Every job is wrapped in its own try/catch so one job's failure
+  or thrown exception can never abort or skip a sibling job. Verified
+  empirically: a real 4-job batch showed jobs starting in two clean
+  waves of 2 (confirmed via `audits.started_at`/`completed_at`
+  overlap), never more than 2 concurrent.
+- **`run-audit.ts` gained an `attempt` increment**, entirely inside its
+  own existing atomic claim step (no separate step, no schema change):
+  it peeks at `claimed_at` before claiming — still-`null` means this is
+  the job's first-ever execution, so `attempt` stays at its INSERT
+  default of 1 unchanged; already-set means a prior execution happened
+  (i.e. this claim is retry-driven), so `attempt` increments by
+  exactly one. Only the claim that actually wins the
+  `status IN ('queued','pending')`-guarded `UPDATE` ever has its
+  `attempt` value persisted, so a losing concurrent claim can never
+  double-increment it. Verified empirically: a job retried twice read
+  `attempt: 1 → 2 → 3`, one increment per real execution, never more.
+- `src/lib/audit/retry-job.ts` — `retryAuditJob()` does the one thing
+  Phase 9 adds beyond re-running: atomically resets a `failed`/`partial`
+  job back to `queued` (guarded by `status IN ('failed','partial')`,
+  clears `error_message`, never touches `attempt` itself) and
+  immediately calls the same unmodified `runAudit()`. **Reuses the
+  existing `audit_jobs` row** rather than creating a new one —
+  `audit_jobs` is the current queue slot, `audits` is the immutable
+  history, and every retry (like every fresh run) inserts a brand-new
+  `audits` row via the existing `writeAuditOutcome()` and never
+  updates or deletes a prior one. Verified empirically: retrying a
+  failed job left its original `audits` row byte-for-byte identical
+  and added exactly one new row, twice in a row.
+- **`RunAuditResult` gained two additive fields**, verified compatible
+  with the unmodified Phase 4 single-business "Run basic audit" button
+  (which only ever read `result.ok`): `status: "completed" | "partial"
+  | "failed"` on the `ok: true` branch (so a batch can tell a fully-
+  failed audit — Outcome D, `ok: true` since the failure was recorded
+  successfully — apart from a `completed`/`partial` one), and
+  `alreadyClaimed?: boolean` on the `ok: false` branch, set only at the
+  claim-failure return site. The batch orchestrator uses these to
+  classify each job into exactly one of `completed`/`partial`/`failed`/
+  `skipped` — a claim conflict (or a job that turns out invalid/
+  nonexistent/non-`basic`) is `skipped` and the database row is left
+  completely untouched; every other outcome, including a thrown
+  exception, is `claimed` and bucketed by its real result.
+- **A website that's unreachable counts as `completed`, not a separate
+  bucket** — the audit process succeeded in producing a verified
+  "unreachable" finding; Outcome D (both PageSpeed and the HTML scan
+  genuinely fail on a reachable site) is what actually produces
+  `failed`. Verified empirically: an unreachable target
+  (`dns_failure`) came back `completed` with one `critical`/`verified`
+  "Website unreachable" finding and score 35, while a real non-HTML
+  target (`https://api.github.com`, `unsupported_content_type`) came
+  back genuinely `failed`.
+- **Stale-job visibility, informational only**: a `Running` job whose
+  `claimed_at` is more than 15 minutes old shows a "Possibly stale"
+  badge next to its status. Nothing resets, reruns, or force-claims it
+  — the Running section has no action controls at all. Verified with a
+  fabricated 20-minutes-old fixture: the badge rendered and the row
+  was completely untouched by simply loading the page.
+- **UI**: nothing runs on page load — every batch/retry needs an
+  explicit click. All three action forms (`runSelectedAuditsAction`,
+  `runNextBatchAction`, and a single shared `retryJobAction` used by
+  every retry button on the page) feed into one combined `anyPending`
+  flag that disables every execution control on the page — checkboxes,
+  both batch buttons, and every retry button — while any one of them
+  is in flight, with an honest "this may take several minutes, do not
+  assume closing this tab is safe" message. No polling/SSE/WebSockets.
+- **Known, accepted testing limitation**: a genuine Outcome C
+  (`partial` — HTML scan succeeds, PageSpeed genuinely fails on an
+  otherwise-reachable site) proved impractical to reproduce on demand
+  against real external targets in this session (no infrastructure
+  available to force it deterministically). `partial` classification
+  was verified by code inspection instead — it flows through the exact
+  same `writeAuditOutcome()` return statement and `runAuditBatch()`
+  branch already proven correct live for `completed` and `failed`, so
+  residual risk is low, but it wasn't exercised end-to-end this phase.
+- Test fixtures: ten new "Queue Test" leads (`A`–`J`, plus one dup-test
+  and one invalid-mix lead) created via the ordinary `/leads/new` flow
+  specifically to populate the queue with fast, deterministic outcomes
+  — see `README.md`'s "Development fixtures" for the full list and
+  results.
+
 All phases were confirmed via full end-to-end testing against the real
 dev Supabase project — see `README.md`'s "Development fixtures"
 section for the exact verified records.
 
-**Do not begin Phase 9 without explicit approval.**
+**Do not begin Phase 10 without explicit approval.**
 
 ## Postponed (not yet implemented — do not add without explicit approval)
 
@@ -468,10 +573,12 @@ section for the exact verified records.
 - Business-value score, contactability score, blended priority score
   (website-need score only is implemented as of Phase 4)
 - Editable scoring settings / `scoring_rules` table usage
-- Audit re-running (only processing existing queued/pending jobs is
-  implemented as of Phase 4)
+- Automatic recovery of a stuck (`auditing` for >15 minutes) job — the
+  Phase 9 queue dashboard shows a "Possibly stale" warning only; no
+  force-reset action exists yet (see "Current phase")
 - Automated/recurring audit workers — the Phase 4 "Run basic audit"
-  button *is* the trigger; there is no polling or scheduled processing
+  button and the Phase 9 queue dashboard's manual batch buttons *are*
+  the triggers; there is no polling or scheduled processing
 - AI API calls of any kind (the Phase 5 copy button only builds and
   clipboard-copies plain text — no OpenAI/Anthropic call is ever made)
 - Automated outreach / outreach status tracking
