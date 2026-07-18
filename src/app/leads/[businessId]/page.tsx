@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 
 import { buildAuditSummaryText } from "@/lib/audit/build-summary-text";
 import type { NormalizedPageSpeed } from "@/lib/audit/normalize-pagespeed";
+import { defaultLeadProfile, getFollowUpState, getTodayISODate } from "@/lib/pipeline/lead-profile";
+import { LEAD_STATUS_LABELS } from "@/lib/pipeline/pipeline-status";
 import { calculateEffectiveScore } from "@/lib/scoring/effective-score";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/server";
 import type { AuditFinding, DeviceType } from "@/lib/supabase/database.types";
@@ -10,6 +12,7 @@ import type { AuditFinding, DeviceType } from "@/lib/supabase/database.types";
 import { CaptureScreenshotsButton } from "./capture-screenshots-button";
 import { CopySummaryButton } from "./copy-summary-button";
 import { FindingStatusButton } from "./finding-status-button";
+import { PipelinePanel } from "./pipeline-panel";
 import { RunAuditButton } from "./run-audit-button";
 
 const SCREENSHOT_SIGNED_URL_TTL_SECONDS = 3600;
@@ -111,6 +114,30 @@ export default async function LeadDetailPage({
 
   const { score: effectiveScore, breakdown: effectiveBreakdown } = calculateEffectiveScore(findings);
 
+  const { data: fetchedProfile } = await supabase
+    .from("lead_profiles")
+    .select("*")
+    .eq("business_id", businessId)
+    .maybeSingle();
+
+  // Every business should have exactly one lead_profiles row (see the
+  // Phase 11 migration) — this fallback is defensive only, not the
+  // normal path.
+  const leadProfile = fetchedProfile ?? defaultLeadProfile(businessId);
+
+  const followUpState = getFollowUpState(
+    leadProfile.next_follow_up_date,
+    leadProfile.status,
+    getTodayISODate(),
+  );
+
+  const { data: activity } = await supabase
+    .from("lead_activity")
+    .select("id, from_status, to_status, created_at")
+    .eq("business_id", businessId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
   const summaryText = latestAudit
     ? buildAuditSummaryText({
         business,
@@ -150,6 +177,37 @@ export default async function LeadDetailPage({
       </header>
 
       <main className="mx-auto w-full max-w-3xl space-y-6 px-8 py-10">
+        <PipelinePanel
+          businessId={businessId}
+          data={{
+            status: leadProfile.status,
+            priority: leadProfile.priority,
+            notes: leadProfile.notes,
+            outreachAngle: leadProfile.outreach_angle,
+            lastContactedDate: leadProfile.last_contacted_date,
+            nextFollowUpDate: leadProfile.next_follow_up_date,
+          }}
+          followUpState={followUpState}
+        />
+
+        <section className="rounded-lg border border-zinc-200 bg-white p-6">
+          <h2 className="text-sm font-medium text-zinc-900">Status history</h2>
+          {!activity || activity.length === 0 ? (
+            <p className="mt-2 text-sm text-zinc-500">No status changes recorded yet.</p>
+          ) : (
+            <ul className="mt-3 space-y-2 text-sm">
+              {activity.map((entry) => (
+                <li key={entry.id} className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2">
+                  <span className="text-zinc-700">
+                    {entry.from_status ? LEAD_STATUS_LABELS[entry.from_status] : "—"} → {LEAD_STATUS_LABELS[entry.to_status]}
+                  </span>
+                  <span className="text-xs text-zinc-400">{new Date(entry.created_at).toLocaleString()}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
         <section className="rounded-lg border border-zinc-200 bg-white p-6">
           <h2 className="text-sm font-medium text-zinc-900">Business</h2>
           <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">

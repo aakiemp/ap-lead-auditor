@@ -158,11 +158,23 @@ first needs it (likely before Phase 9's real async job endpoints go
 live, or before deployment in Phase 16, whichever comes first). Do not
 add it preemptively; wait for explicit approval.
 
+**Note on phase numbering:** the table above reflects the original
+phase plan drafted at project inception. Actual approved scope for
+Phase 9 onward diverged from these original one-line descriptions —
+Phase 9 became the audit queue dashboard, Phase 10 became outreach
+preparation, and Phase 11 became the lightweight lead/outreach
+pipeline described under "Current phase" below, not this table's
+original "deep audit"/"Make.com scenarios" text. "Current phase" is
+the authoritative, up-to-date record of what was actually built at
+each phase number; this table is kept for historical planning context
+and has not been rewritten to match.
+
 ## Current phase
 
-**Phase 1 through Phase 9.5 — complete and verified (Phase 10's real-
-browser interaction check is pending the user's own click-through;
-Phase 9.5's is too — see below).**
+**Phase 1 through Phase 11 — complete and verified.** Phase 9.5's and
+Phase 10's real-browser interaction checks remain pending the user's
+own click-through (see below). Phase 11 has an additional, narrower
+testing gap of its own — see its write-up below.
 
 Phase 3 added the manual single-website intake flow: `/leads/new` (a
 Next.js Server Action, not a public API route), `/leads` (list),
@@ -776,11 +788,184 @@ persistence:
   correctness, tone/selection/routing logic, escaping, wording) was
   verified as described above.
 
+Phase 11 added a lightweight lead/outreach pipeline (status, priority,
+notes, outreach angle, contact/follow-up dates) with an atomic,
+trigger-enforced status history, plus a rewrite of `/leads` into a
+filterable/sortable/paginated dashboard — no email sending, no
+Make.com, no automated outreach:
+- **Schema**: `supabase/migrations/20260721000000_phase11_lead_pipeline.sql`
+  creates `lead_profiles` (`business_id` primary key/FK to
+  `businesses` `on delete cascade`, `status` text+`CHECK` across the
+  10 approved values defaulting to `'new'`, `priority` text+`CHECK`
+  (`low`/`medium`/`high`, nullable), `notes` text, `outreach_angle`
+  text, `last_contacted_date` date, `next_follow_up_date` date,
+  `created_at`/`updated_at` — the existing `set_updated_at()` trigger
+  function reused for the latter) and `lead_activity` (`id` uuid
+  primary key, `business_id` FK `on delete cascade`, `from_status`
+  text+`CHECK`/nullable, `to_status` text+`CHECK` not null, `note`
+  text — present in the schema but never written by any application
+  code in this phase, `created_at`). Indexes on `lead_profiles.status`,
+  `.priority`, `.next_follow_up_date`, and
+  `lead_activity(business_id, created_at desc)`. RLS enabled, no
+  policies, matching every other table. `service_role` granted
+  select/insert/update/delete on both new tables plus the existing
+  default-privileges/sequence grants re-asserted.
+- **Backfill and auto-creation, not lazy creation**: the migration
+  inserts a `'new'`-status `lead_profiles` row for every existing
+  business (`on conflict (business_id) do nothing`, confirmed
+  idempotent), and a `create_default_lead_profile()` function fires
+  `after insert on businesses` so every future business gets one
+  immediately, atomically, in the same transaction as its own
+  creation — never lazily on first page view. A missing row is an
+  unexpected state (application code defends against it via
+  `defaultLeadProfile()` as a fallback, but this is not the normal
+  path). Verified empirically: 45 businesses = 45 `lead_profiles` rows
+  immediately after migration, 0 spurious `lead_activity` rows from
+  the backfill; a fresh business created via the ordinary `/leads/new`
+  flow immediately had a correctly auto-created profile
+  (`status: 'new'`, every other field null).
+- **Status history is trigger-only, no per-transition note (Option
+  B)** — the design decision made and reported before writing
+  application code, as the approval required. A
+  `log_lead_status_change()` function fires
+  `after update of status on lead_profiles for each row when
+  (old.status is distinct from new.status)`, inserting exactly one
+  `lead_activity` row with the real `from_status`/`to_status` in the
+  same transaction as the status write — atomic by construction, not
+  a two-step application-level sequence, and impossible for
+  application code to bypass, double-write, or desync. A same-status
+  resubmission or an update to any other column never fires it
+  (`WHEN` clause). Option A (a narrowly-scoped RPC accepting an
+  optional operator note) was considered and explicitly not chosen:
+  the general-purpose `notes` field already covers "why did this
+  change," and an RPC-based design would have been harder to validate
+  without a live database connection during planning. Status
+  transitions are fully permissive — any of the 10 values to any
+  other, no enforced workflow graph, matching the approved design (an
+  internal manual tool, not a system needing guardrails against the
+  operator's own judgment).
+- **Status/priority never auto-advance.** No code path infers or sets
+  `lead_profiles.status` or `.priority` from audit completion, audit
+  score, Google Places data (rating/review count), source, website
+  reachability, finding severity, outreach-brief generation, or copied
+  outreach text — every change is an explicit Server Action call
+  triggered by an explicit operator form submission.
+- **`src/app/leads/[businessId]/pipeline-actions.ts`** — five
+  `"use server"` async functions
+  (`updateLeadStatusAction`/`updateLeadPriorityAction`/
+  `updateLeadNotesAction`/`updateLeadOutreachAngleAction`/
+  `updateLeadDatesAction`), each validating `businessId` (UUID shape)
+  and its field via the zod schemas in
+  `src/lib/validation/pipeline.ts`, running a plain `UPDATE ...
+  WHERE business_id = ...` scoped update, detecting a missing profile
+  via `.select("business_id").maybeSingle()` returning null (a
+  sanitized "profile could not be found" error, never a raw Postgres
+  error — confirmed by testing against a syntactically-valid but
+  nonexistent business id), and calling `revalidatePath()` for both
+  lead pages plus `/leads` on success. Notes are trimmed and capped at
+  10,000 characters, outreach angle at 500 — both server-side,
+  boundary-tested at exactly the limit (accepted) and one character
+  over (rejected). Dates are validated as plain `YYYY-MM-DD` strings
+  (nullable, to support clearing a field) — never a timestamp, matching
+  the approved no-times decision.
+- **`src/lib/pipeline/lead-profile.ts`** — `getFollowUpState()` is a
+  pure function: overdue = `next_follow_up_date` before today AND
+  status not in `won`/`lost`/`not_a_fit`; due-today and upcoming are
+  distinguished; returns `null` for no date or a terminal status
+  regardless of how overdue the stored date is. Plain `YYYY-MM-DD`
+  lexicographic string comparison throughout, deliberately avoiding
+  `Date` object timezone-conversion bugs (the same pattern already
+  established in Phase 9.5's stale-job check). `getTodayISODate()` is
+  kept in its own function (not inlined into a component's render
+  body) per the project's established React-purity convention for
+  `Date.now()`/`new Date()` calls.
+- **`src/app/leads/[businessId]/pipeline-panel.tsx`** — a Client
+  Component rendered identically on both `/leads/[businessId]` and
+  `/leads/[businessId]/outreach`, using five separate `useActionState`
+  hooks (one per field group) so each form saves independently.
+  Selecting `"contacted"` in the status dropdown prefills the (still
+  separate, still-unsubmitted) last-contacted date field with today's
+  date client-side, only when that field is currently empty — the
+  value stays visible and editable, and nothing is written until the
+  operator explicitly submits the dates form, matching the approved
+  "must not silently write a date" requirement.
+- **`/leads` rewritten in place** (no new route) into a
+  filterable/sortable/paginated dashboard: one-or-more statuses,
+  priority, an overdue toggle, source, and a business-name/website
+  search box; sort by newest/oldest/status/priority/follow-up date; a
+  hard 50-row page size with server-side `.range()` pagination
+  (`{ count: 'exact' }`), filters and sort preserved across page links.
+  A search or source filter first resolves a narrowed business-id list
+  before querying `lead_profiles`, so filtering never loads the full
+  unbounded business table into memory. **Known, accepted
+  limitation**: status/priority sort is plain alphabetical text order
+  on the stored string values, not a true workflow-stage or severity
+  order — no ordinal/rank column was added, since that schema change
+  was outside this phase's approved scope.
+- **Notes and outreach angle stay internal-only by construction.** The
+  Phase 10 outreach DTO (`OutreachBriefData`) was not modified to add
+  either field, and `outreach-builder.tsx` required no changes at all
+  — confirmed both by a clean typecheck and by a live test: a
+  distinctive marker string set in both `notes` and `outreach_angle`
+  on a real fixture appeared in the `PipelinePanel` form fields (and,
+  necessarily, in that component's own hydration payload) but was
+  completely absent from the outreach page's copyable `<pre>` preview
+  block when checked directly against the rendered HTML.
+- **Zero pipeline-code changes touch audit data.** Row counts for
+  `audits`, `audit_findings`, `audit_scores`, `screenshots`, and
+  `audit_jobs` were captured before and compared after a full,
+  95-assertion Phase 11 test run — all five unchanged.
+- **Testing method and a real, thoroughly-diagnosed environment
+  limitation, not a workaround**: the raw-HTTP Server Action
+  replication method used successfully in every prior phase's testing
+  (extracting and POSTing back the `$ACTION_REF_N`/`$ACTION_N:0`/
+  `$ACTION_N:1`/`$ACTION_KEY` hidden form fields) turned out to hang
+  indefinitely on a **successful** response in this container's dev
+  server (`Next.js 16.2.10`) — the request never returns until the
+  client's own timeout closes the connection, at which point the dev
+  server retroactively logs a slow "200." This was root-caused, not
+  just observed: timing instrumentation showed the real action logic
+  (zod validation, the Supabase update, even a full page re-render)
+  completing in under 1–2 seconds every time; the identical hang
+  reproduced on a **pre-existing, previously-proven Phase 5 action**
+  (`updateFindingStatusAction`), ruling out a Phase 11 defect; it
+  reproduced identically under both Turbopack and `next dev --webpack`,
+  ruling out a Turbopack-specific bug; a trivial hand-written API route
+  confirmed plain POST requests are not broadly broken in this
+  environment (16ms round trip); and an intentionally-invalid action
+  reference returned a normal error response, isolating the bug
+  specifically to encoding/streaming a *successful* Server Action
+  response. Given this, Phase 11's five mutating actions were instead
+  tested by importing and calling the real, unmodified exported
+  functions directly from a Node/`tsx` script against the real dev
+  database (stubbing only the `server-only` package's unconditional
+  throw, which exists purely as a Next.js build-time guard and is a
+  no-op outside its bundler) — genuinely exercising the same
+  validation, Supabase calls, and database trigger a live request
+  would, via 95 passing assertions covering every one of the 10
+  status values in sequence, an arbitrary non-adjacent transition
+  (`won` → `new`), invalid-status rejection, a same-status resubmit
+  producing no history row, two concurrent status updates producing
+  exactly two history rows with no lost update, every priority value
+  plus unsetting it, notes/angle trimming and exact-boundary length
+  validation, valid/invalid/cleared dates, the full overdue/due-today/
+  upcoming/terminal-exclusion matrix, not-found handling, and
+  profile-backfill/auto-creation for both manual and Places-imported
+  businesses. Every read-only path (`/leads` filters/sorting/search/
+  pagination, the lead-detail page, the outreach page, the "no
+  visible UUIDs" check) was still verified live over real HTTP, since
+  plain GET requests are unaffected by this bug. Interactive browser
+  click-through remains deferred to the user, same as Phase 9.5/10.
+- Test fixture: **Pipeline Test Lead** (`https://example.com`,
+  business id `9bf9c33c-e100-4719-ab10-c434314bdadc`, created via the
+  ordinary `/leads/new` flow), left reset to a clean `new`/no-priority/
+  no-notes/no-history state after testing, available for reuse.
+
 All phases were confirmed via full end-to-end testing against the real
 dev Supabase project — see `README.md`'s "Development fixtures"
 section for the exact verified records.
 
-**Do not begin Phase 11 without explicit approval.**
+**Do not begin Phase 12 without explicit approval.**
 
 ## Postponed (not yet implemented — do not add without explicit approval)
 
@@ -819,9 +1004,15 @@ section for the exact verified records.
   the triggers; there is no polling or scheduled processing
 - AI API calls of any kind (the Phase 5 copy button only builds and
   clipboard-copies plain text — no OpenAI/Anthropic call is ever made)
-- Automated outreach / outreach status tracking (Phase 10 prepares a
-  brief and draft copy for the user to send manually; nothing is ever
-  sent automatically and no send-status is tracked)
+- Automated outreach — sending email/messages, or any status change
+  triggered automatically rather than by an explicit operator action
+  (Phase 10 prepares a brief and draft copy for the user to send
+  manually; nothing is ever sent automatically). Manual pipeline
+  status/priority/notes/follow-up tracking **is** implemented as of
+  Phase 11 (`lead_profiles`, `lead_activity`) — what remains postponed
+  is automating any part of it, plus reminders/notifications for
+  overdue follow-ups (Phase 11's overdue badge is informational only,
+  computed on read, never pushed or emailed)
 - Persisting outreach briefs, draft edits, versioning, or send-time
   snapshots (Phase 10 generates on demand from current records only;
   no `outreach_briefs` table exists — see "Current phase")

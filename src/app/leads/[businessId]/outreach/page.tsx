@@ -2,10 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import type { OutreachBriefData, OutreachFinding } from "@/lib/outreach/build-prospect-brief";
+import { defaultLeadProfile, getFollowUpState, getTodayISODate } from "@/lib/pipeline/lead-profile";
 import { calculateEffectiveScore } from "@/lib/scoring/effective-score";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/server";
 import type { AuditFinding, DeviceType } from "@/lib/supabase/database.types";
 
+import { PipelinePanel } from "../pipeline-panel";
 import { OutreachBuilder } from "./outreach-builder";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -117,6 +119,15 @@ export default async function OutreachPage({
 
   const { score: effectiveScore } = calculateEffectiveScore(findings ?? []);
 
+  const { data: fetchedProfile } = await supabase
+    .from("lead_profiles")
+    .select("*")
+    .eq("business_id", businessId)
+    .maybeSingle();
+
+  const leadProfile = fetchedProfile ?? defaultLeadProfile(businessId);
+  const followUpState = getFollowUpState(leadProfile.next_follow_up_date, leadProfile.status, getTodayISODate());
+
   // Narrow, sanitized DTO only — never the raw Supabase rows. See
   // CLAUDE.md for the exact allowed/forbidden field list. Screenshot
   // display data (signed URLs) is passed to the Client Component as a
@@ -161,7 +172,19 @@ export default async function OutreachPage({
         </p>
       </header>
 
-      <main className="mx-auto w-full max-w-5xl px-8 py-10">
+      <main className="mx-auto w-full max-w-5xl space-y-6 px-8 py-10">
+        <PipelinePanel
+          businessId={businessId}
+          data={{
+            status: leadProfile.status,
+            priority: leadProfile.priority,
+            notes: leadProfile.notes,
+            outreachAngle: leadProfile.outreach_angle,
+            lastContactedDate: leadProfile.last_contacted_date,
+            nextFollowUpDate: leadProfile.next_follow_up_date,
+          }}
+          followUpState={followUpState}
+        />
         <OutreachBuilder data={briefData} screenshotUrls={signedScreenshotUrls} />
       </main>
     </div>

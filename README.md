@@ -11,11 +11,17 @@ against.
 
 ## Current status
 
-**Phase 1 through Phase 9.5, plus Phase 10 — implemented and
-machine-verified end-to-end.** Phase 9.5's and Phase 10's real-browser
-interaction checks are both pending the user's own click-through —
-this sandboxed container can't launch a real browser (see "Current
-status" below for why).
+**Phase 1 through Phase 11 — implemented and machine-verified.**
+Phase 9.5's and Phase 10's real-browser interaction checks are both
+pending the user's own click-through — this sandboxed container can't
+launch a real browser. Phase 11 has an additional, narrower testing
+gap of its own: this container's dev server has a reproducible bug
+(see "Development fixtures" below) that hangs on the raw HTTP
+replication method used for prior phases' Server Action testing, so
+Phase 11's mutations were instead verified by calling the real Server
+Action functions directly (same `npx tsx` technique already used for
+Phase 10's pure-function testing) plus live HTTP testing of every
+read-only path.
 
 Phase 1 — bare project scaffold:
 
@@ -315,6 +321,63 @@ No authentication, no Make.com integration, no business-value/
 contactability/priority scores, no automated worker, no AI API calls,
 no automated outreach sending, no deep/multi-page crawling yet.
 
+Phase 11 — lightweight lead/outreach pipeline (status, priority,
+notes, outreach angle, contact/follow-up dates) on top of existing
+audited businesses, with an atomic, trigger-enforced status history:
+
+- New `lead_profiles` table (one row per business, backfilled for
+  every existing business and auto-created for every future one via
+  an `AFTER INSERT` trigger on `businesses`) holds `status` (10
+  values, fully permissive transitions — any status to any other, no
+  workflow enforced), `priority` (`low`/`medium`/`high`/unset, always
+  manual), `notes` (internal only, never in outreach output),
+  `outreach_angle` (internal unless the operator deliberately uses it
+  composing, never auto-populated from findings), and
+  `last_contacted_date`/`next_follow_up_date` (date-only, no times).
+- New `lead_activity` table is populated **only** by a database
+  trigger (`AFTER UPDATE OF status ... WHEN (OLD.status IS DISTINCT
+  FROM NEW.status)`), never by application code — one immutable
+  `from_status`/`to_status`/`created_at` row per real status change,
+  atomically in the same transaction as the status update. A
+  same-status resubmission or a change to any other field creates no
+  row. **Design decision**: history rows carry no per-transition note
+  (trigger-only, Option B from the two approaches considered before
+  the migration was written) — the existing general-purpose `notes`
+  field already covers "why did this change," and a note-carrying
+  design would have required a Postgres RPC that's harder to validate
+  without a live database connection during planning.
+- Status changes never auto-advance from audit results, Google Places
+  data, outreach-brief generation, or follow-up dates — every change
+  is an explicit user action.
+- Overdue-follow-up is computed, not stored: `next_follow_up_date`
+  before today AND status not in `won`/`lost`/`not_a_fit`. Plain
+  date-string comparison (`YYYY-MM-DD`, lexicographic order),
+  deliberately avoiding timezone-conversion bugs.
+- `/leads` was rewritten in place (no new route) into a filterable,
+  sortable, paginated pipeline dashboard: one-or-more statuses,
+  priority, overdue toggle, source, and a name/domain search box;
+  sort by newest/oldest/status/priority/follow-up date; 50 rows per
+  page, server-side pagination, filters preserved across pages.
+  **Known limitation**: status/priority sort is plain alphabetical
+  text order, not a true workflow/severity order — no ordinal column
+  was added, since that schema change wasn't part of what was
+  approved for this phase.
+- The same `PipelinePanel` Client Component (status/priority/notes/
+  outreach-angle/dates forms, each saving independently) renders on
+  both `/leads/[businessId]` and `/leads/[businessId]/outreach`; the
+  lead-detail page additionally shows a newest-first status-history
+  list (no activity ids exposed). `outreach-builder.tsx` needed no
+  changes — the Phase 10 outreach DTO structurally excludes `notes`
+  and `outreach_angle`, confirmed by directly checking a fixture with
+  distinctive marker text in both fields: present in the pipeline
+  form fields, absent from the copyable brief `<pre>` output.
+- No changes to `audits`/`audit_findings`/`audit_scores`/`screenshots`/
+  `audit_jobs` — confirmed by comparing row counts across all five
+  tables before and after the full Phase 11 test run (unchanged).
+
+No email sending, no Gmail/Make.com integration, no AI-generated
+content, no external reminders, no deployment.
+
 ## Development fixtures
 
 Four test leads exist in the dev Supabase project as known-good
@@ -427,6 +490,62 @@ of the Client Component's wiring, consistent with what was approved
 for this phase. The dev server was left running for the user to
 click through `/leads/[businessId]/outreach` themselves.
 
+Phase 11 added one dedicated fixture, **Pipeline Test Lead**
+(`https://example.com`, created via the ordinary `/leads/new` flow,
+business id `9bf9c33c-e100-4719-ab10-c434314bdadc`), used to drive a
+95-assertion test run covering: every one of the 10 status values in
+sequence (each producing exactly one correct `lead_activity` row), an
+arbitrary non-linear transition (`won` → `new`, proving no enforced
+workflow graph), invalid-status rejection, a same-status resubmission
+(no history row), two concurrent status updates (both land, exactly
+two history rows, final status is one of the two submitted values —
+no lost update, no duplicate/triplicate row), every priority value
+plus unsetting it, notes/outreach-angle trimming and exact-boundary
+length validation (10,000 and 500 chars respectively accepted,
+10,001/501 rejected), valid/invalid/cleared contact dates, the
+overdue/due-today/upcoming follow-up logic including terminal-status
+exclusion, a not-found business handled without a crash or a raw
+database error surfacing, and confirmation that every business
+(manual and Places-imported alike) still has exactly one
+`lead_profiles` row. Left in a reset (`new`/no priority/no notes/no
+history) state afterward, available for future reuse. The HTML Scan
+Test - Divi Roofing Demo fixture was also reused briefly to verify
+notes/outreach-angle never leak into copied outreach output (a
+distinctive marker string was set in both fields, confirmed present
+in the pipeline form and absent from the copy-preview `<pre>` block,
+then cleared).
+
+**Known testing limitation, more specific than prior phases**: this
+container's Next.js dev server (`16.2.10`, reproduced under both
+Turbopack and webpack) has a bug where a **successful** Server Action
+response — invoked via the same raw HTTP replication method used
+successfully in every earlier phase's testing (extracting the
+`$ACTION_REF_N`/`$ACTION_N:0`/`$ACTION_N:1`/`$ACTION_KEY` hidden form
+fields and POSTing them back) — never reaches the client; the request
+hangs until the client's own timeout closes the connection, at which
+point the dev server's log retroactively reports it as a slow "200."
+This was diagnosed thoroughly, not just noticed and worked around:
+timing instrumentation showed the actual action logic (validation,
+the Supabase update, even the full page re-render) completing in
+under 1–2 seconds every time; a **pre-existing, previously-proven
+Phase 5 action** (`updateFindingStatusAction`) reproduced the exact
+same hang, ruling out a Phase 11 code defect; a trivial hand-written
+API route confirmed plain POST requests are not broadly broken in
+this environment; and an error-path Server Action response (an
+intentionally invalid action reference) returned normally, isolating
+the bug to success-path response encoding specifically. Given this,
+Phase 11's mutating logic was instead verified by importing and
+calling the real, unmodified Server Action functions directly from a
+Node/`tsx` script (stubbing only the `server-only` build-time guard,
+which is a no-op outside Next's bundler) against the real dev
+database — genuinely exercising the same validation, Supabase calls,
+and database trigger as a live request would, without going through
+the broken response path. Every read-only path (`/leads` filters,
+sorting, search, pagination, the lead-detail page, the outreach page)
+was still verified live over real HTTP, since GET requests are
+unaffected. Interactive browser click-through (the same limitation as
+Phase 9.5/10) remains for the user.
+
 ## Getting started
 
 ```bash
@@ -471,14 +590,16 @@ src/
         page.tsx            # intake form (Client Component)
         actions.ts          # "use server" — the intake Server Action
       [businessId]/
-        page.tsx            # lead detail — business/website/audit/findings/score/screenshots
+        page.tsx            # lead detail — business/website/audit/findings/score/screenshots/pipeline/history
         actions.ts           # "use server" — runAudit + updateFindingStatus + captureScreenshots actions
+        pipeline-actions.ts   # "use server" — status/priority/notes/outreach-angle/dates actions
+        pipeline-panel.tsx     # Client Component: pipeline forms, rendered on both this page and outreach/
         run-audit-button.tsx # Client Component wrapping runAuditAction
         finding-status-button.tsx # Client Component: verify/dismiss/restore
         copy-summary-button.tsx   # Client Component: clipboard copy
         capture-screenshots-button.tsx # Client Component wrapping captureScreenshotsAction
         outreach/
-          page.tsx              # server component: builds the sanitized outreach DTO
+          page.tsx              # server component: builds the sanitized outreach DTO + pipeline data
           outreach-builder.tsx   # Client Component: tone/findings/dismissed toggle, live preview, copy
     searches/
       page.tsx               # list of past searches
@@ -532,10 +653,14 @@ src/
       render-plain-text.ts     # pure function: brief -> plain text (no content decisions)
       render-markdown.ts        # pure function: brief -> markdown, escapes user-controlled text
       tone-presets.ts             # fixed, human-reviewed phrase banks (no AI)
+    pipeline/
+      pipeline-status.ts    # status/priority lists, labels, isTerminalLeadStatus()
+      lead-profile.ts        # defaultLeadProfile(), getFollowUpState(), getTodayISODate()
     validation/
       website-intake.ts    # zod schema for the intake form
       search-intake.ts     # zod schema for the search form
       queue-batch.ts        # batch size schema/limits (default 3, max 10)
+      pipeline.ts            # zod schemas for status/priority/notes/angle/dates
     leads/
       create-manual-lead.ts # orchestrates the Phase 3 writes (also sets phone_normalized, Phase 8)
 
@@ -590,7 +715,18 @@ plain SQL files applied by hand rather than via `supabase db push`.
    `progress_updated_at` (nullable) to the existing `audit_jobs`
    table. No new table, so no grant changes needed — the existing
    table-level grants already cover both columns.
-8. Repeat for any later migration files, in filename (timestamp) order.
+8. Repeat for
+   `supabase/migrations/20260721000000_phase11_lead_pipeline.sql` —
+   creates `lead_profiles` and `lead_activity` (both RLS enabled, no
+   policies), backfills a `lead_profiles` row for every existing
+   business, adds an `AFTER INSERT` trigger on `businesses` so every
+   future business gets one automatically, and an `AFTER UPDATE OF
+   status` trigger on `lead_profiles` that writes the one-and-only
+   `lead_activity` row per real status change atomically — no
+   application code ever inserts into `lead_activity` directly. Also
+   grants `service_role` table+sequence permissions on both new
+   tables.
+9. Repeat for any later migration files, in filename (timestamp) order.
 
 **Row level security:** every table has RLS **enabled with no
 policies**. This is intentional, not a placeholder to fill in later —

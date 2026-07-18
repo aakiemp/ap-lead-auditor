@@ -67,6 +67,24 @@ export type DeviceType = "mobile" | "desktop";
 
 export type SearchStatus = "pending" | "completed" | "partial" | "failed";
 
+// Phase 11. Fully permissive transitions — this is a manual,
+// single-operator tool, not an enforced workflow. See CLAUDE.md.
+export type LeadStatus =
+  | "new"
+  | "reviewing"
+  | "qualified"
+  | "outreach_ready"
+  | "contacted"
+  | "replied"
+  | "follow_up"
+  | "won"
+  | "lost"
+  | "not_a_fit";
+
+// Entirely manual — never inferred from audit score, Google rating,
+// review count, source, website reachability, or finding severity.
+export type LeadPriority = "low" | "medium" | "high";
+
 export type Database = {
   public: {
     Tables: {
@@ -644,6 +662,87 @@ export type Database = {
           },
         ];
       };
+
+      lead_profiles: {
+        Row: {
+          business_id: string;
+          status: LeadStatus;
+          priority: LeadPriority | null;
+          notes: string | null;
+          outreach_angle: string | null;
+          last_contacted_date: string | null;
+          next_follow_up_date: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          business_id: string;
+          status?: LeadStatus;
+          priority?: LeadPriority | null;
+          notes?: string | null;
+          outreach_angle?: string | null;
+          last_contacted_date?: string | null;
+          next_follow_up_date?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          business_id?: string;
+          status?: LeadStatus;
+          priority?: LeadPriority | null;
+          notes?: string | null;
+          outreach_angle?: string | null;
+          last_contacted_date?: string | null;
+          next_follow_up_date?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "lead_profiles_business_id_fkey";
+            columns: ["business_id"];
+            referencedRelation: "businesses";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+
+      // Append-only — written exclusively by the lead_profiles_log_status_change
+      // trigger. Application code never inserts, updates, or deletes here directly.
+      lead_activity: {
+        Row: {
+          id: string;
+          business_id: string;
+          from_status: LeadStatus | null;
+          to_status: LeadStatus;
+          note: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          business_id: string;
+          from_status?: LeadStatus | null;
+          to_status: LeadStatus;
+          note?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          business_id?: string;
+          from_status?: LeadStatus | null;
+          to_status?: LeadStatus;
+          note?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "lead_activity_business_id_fkey";
+            columns: ["business_id"];
+            referencedRelation: "businesses";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
@@ -676,3 +775,8 @@ export type AuditScoreInsert = Database["public"]["Tables"]["audit_scores"]["Ins
 
 export type Screenshot = Database["public"]["Tables"]["screenshots"]["Row"];
 export type ScreenshotInsert = Database["public"]["Tables"]["screenshots"]["Insert"];
+
+export type LeadProfile = Database["public"]["Tables"]["lead_profiles"]["Row"];
+export type LeadProfileUpdate = Database["public"]["Tables"]["lead_profiles"]["Update"];
+
+export type LeadActivity = Database["public"]["Tables"]["lead_activity"]["Row"];
