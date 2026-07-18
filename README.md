@@ -11,7 +11,7 @@ against.
 
 ## Current status
 
-**Phase 1 through Phase 5 — complete and fully verified end-to-end.**
+**Phase 1 through Phase 6 — complete and fully verified end-to-end.**
 
 Phase 1 — bare project scaffold:
 
@@ -89,6 +89,36 @@ Phase 5 — finding review and the copy-to-AI summary:
   is never mutated (`audits`/`audit_scores` stay immutable, same
   principle as Phase 2–4).
 
+Phase 6 — mobile + desktop homepage screenshots via Apify:
+
+- A separate **"Capture screenshots"** button on `/leads/[businessId]`
+  — deliberately not merged into "Run basic audit," so PageSpeed stays
+  fast and Apify spend (unlike free-tier PageSpeed) is a per-lead
+  choice. Only shown when the website is known-reachable and hidden
+  once both device types are captured.
+- Calls the `apify/screenshot-url` actor (mobile width 390, desktop
+  width 1366) via Apify's REST API — token sent only via
+  `Authorization: Bearer`, never a query string, log line, or stored
+  value. No automatic retry; a manual re-click is the retry path. The
+  actor's input schema was fetched from Apify directly (not guessed):
+  it takes no height parameter at all and always captures the page's
+  full scrollable height at the given width — full-page by default,
+  nothing extra to configure. `viewport_height` (844/768) is stored on
+  each `screenshots` row as a nominal reference value only.
+- Only `image/png` responses are accepted — anything else (including
+  JPEG) is safely rejected rather than mislabeled.
+- Images upload to a **private** Supabase Storage bucket
+  (`{business_id}/{audit_id}/{device_type}.png`); the page displays
+  them via fresh 1-hour **signed URLs** generated server-side on every
+  load — never a public link.
+- Each device type is captured independently and idempotently: a
+  device type that already has a `screenshots` row is skipped, so a
+  repeat click (or a partial prior failure) is always safe and never
+  duplicates or overwrites.
+- Entirely optional and additive — a screenshot failure (or the
+  feature not being used at all) never touches `audits`, `audit_jobs`,
+  `audit_findings`, or `audit_scores`.
+
 Verified against the real dev Supabase project — see "Development
 fixtures" below for exactly what was tested and what exists in the
 database. Two Phase 3 bugs surfaced and were fixed during earlier
@@ -96,10 +126,10 @@ testing — see `CLAUDE.md` for details (an overly-permissive URL parser,
 and an env-var normalization gap for a Supabase URL that already had
 `/rest/v1` appended).
 
-No authentication, no desktop PageSpeed, no screenshots, no Google
-Places/Apify/Make.com integration, no business-value/contactability/
-priority scores, no audit re-running, no automated worker, no AI API
-calls, no outreach automation yet.
+No authentication, no Google Places/Make.com integration, no
+business-value/contactability/priority scores, no audit re-running, no
+automated worker, no AI API calls, no outreach automation, no HTML
+scanning/crawling yet.
 
 ## Development fixtures
 
@@ -108,7 +138,7 @@ fixtures (not cleaned up — kept intentionally for future testing):
 
 | Business | Website | Result |
 |---|---|---|
-| Reachable Site Test (Phase 3 verify) | `https://example.com` | Audit completed. Performance 100, Accessibility 96, SEO 80, Best practices 96. 0 findings, website-need score 0. |
+| Reachable Site Test (Phase 3 verify) | `https://example.com` | Audit completed. Performance 100, Accessibility 96, SEO 80, Best practices 96. 0 findings, website-need score 0. Also used in Phase 6: has both a mobile and desktop `screenshots` row (verified duplicate-safe on a second capture attempt). |
 | Unreachable Host Test (Phase 3 verify) | an `.invalid` hostname | Audit completed without a PageSpeed call. 1 finding ("Website unreachable", critical). Website-need score 35. Also used in Phase 5 to test dismiss → restore → verify; its one finding's `status` ended the test cycle as `verified` (points/description unchanged throughout; the stored `audit_scores` row was never touched). |
 | Duplicate Submission Test (Phase 4 verify) | `https://example.com` | Used to verify concurrent Run-audit clicks only ever produce one audit row. Same result profile as the first fixture. |
 
@@ -123,11 +153,14 @@ npm run dev
 Open http://localhost:3000.
 
 `.env.local` is now required for `/leads`, `/leads/new`, and
-`/leads/[businessId]` to work — they read/write Supabase directly, and
+`/leads/[businessId]` to work — they read/write Supabase directly.
 `GOOGLE_PAGESPEED_API_KEY` is required for the "Run basic audit" button
-to succeed on a reachable website (a website that's already known to be
-unreachable never calls PageSpeed, so it works without the key). The
-root `/` dashboard still renders without any of it.
+to succeed on a reachable website; `APIFY_API_TOKEN` and
+`APIFY_SCREENSHOT_ACTOR_ID` are required for "Capture screenshots" to
+succeed (a website already known to be unreachable never calls either
+service, so both buttons render fine without those keys — they just
+can't complete their action). The root `/` dashboard still renders
+without any of it.
 
 ## Scripts
 
@@ -148,11 +181,12 @@ src/
         page.tsx            # intake form (Client Component)
         actions.ts          # "use server" — the intake Server Action
       [businessId]/
-        page.tsx            # lead detail — business/website/audit/findings/score
-        actions.ts           # "use server" — runAudit + updateFindingStatus actions
+        page.tsx            # lead detail — business/website/audit/findings/score/screenshots
+        actions.ts           # "use server" — runAudit + updateFindingStatus + captureScreenshots actions
         run-audit-button.tsx # Client Component wrapping runAuditAction
         finding-status-button.tsx # Client Component: verify/dismiss/restore
         copy-summary-button.tsx   # Client Component: clipboard copy
+        capture-screenshots-button.tsx # Client Component wrapping captureScreenshotsAction
   lib/
     env.ts        # zod-validated environment variables (client + server)
     supabase/
@@ -169,6 +203,8 @@ src/
       generate-findings.ts  # pure function: website+pagespeed -> findings
       run-audit.ts           # orchestrates claim -> pagespeed -> writes
       build-summary-text.ts  # pure function: data -> copy-to-AI plain text
+      apify-screenshot.ts     # Apify REST client: run actor, fetch + validate image
+      capture-screenshots.ts  # orchestrates parallel mobile+desktop capture, upload, insert
     scoring/
       website-need-score.ts # pure function: findings -> score + breakdown (Phase 4, at creation time)
       effective-score.ts    # pure function: findings -> live score, excludes dismissed (Phase 5, display/copy time)
@@ -184,9 +220,11 @@ supabase/
 ## Environment variables
 
 See `.env.example`. Supabase variables are validated as of Phase 1;
-`GOOGLE_PAGESPEED_API_KEY` (server-only) as of Phase 4. Google Places,
-Apify, and Make.com variables will be added in later phases as those
-integrations are implemented — do not add real keys for them yet.
+`GOOGLE_PAGESPEED_API_KEY` (server-only) as of Phase 4;
+`APIFY_API_TOKEN` and `APIFY_SCREENSHOT_ACTOR_ID` (both server-only) as
+of Phase 6. Google Places and Make.com variables will be added in later
+phases as those integrations are implemented — do not add real keys
+for them yet.
 
 **Use a development Supabase project only.** Do not point this app at a
 production project or real customer data at this stage.
@@ -206,7 +244,14 @@ plain SQL files applied by hand rather than via `supabase db push`.
    `audits`, `audit_findings`, and `audit_scores`, with foreign keys,
    check constraints, indexes, `updated_at` triggers on the mutable
    tables, and row level security enabled (no policies) on all six.
-5. Repeat for any later migration files, in filename (timestamp) order.
+5. Repeat for `supabase/migrations/20260718000000_phase6_screenshots.sql`
+   — creates the `screenshots` table (RLS enabled, no policies) and the
+   private `screenshots` Storage bucket (idempotent). This migration
+   also re-asserts `service_role` GRANTs on all seven tables and sets
+   `ALTER DEFAULT PRIVILEGES` for future tables, so — unlike after
+   Phase 2 — a fresh database built from just the migration files does
+   **not** need the manual grants fix described below.
+6. Repeat for any later migration files, in filename (timestamp) order.
 
 **Row level security:** every table has RLS **enabled with no
 policies**. This is intentional, not a placeholder to fill in later —

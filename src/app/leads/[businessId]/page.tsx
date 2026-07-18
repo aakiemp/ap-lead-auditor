@@ -5,11 +5,15 @@ import { buildAuditSummaryText } from "@/lib/audit/build-summary-text";
 import type { NormalizedPageSpeed } from "@/lib/audit/normalize-pagespeed";
 import { calculateEffectiveScore } from "@/lib/scoring/effective-score";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/server";
-import type { AuditFinding } from "@/lib/supabase/database.types";
+import type { AuditFinding, DeviceType } from "@/lib/supabase/database.types";
 
+import { CaptureScreenshotsButton } from "./capture-screenshots-button";
 import { CopySummaryButton } from "./copy-summary-button";
 import { FindingStatusButton } from "./finding-status-button";
 import { RunAuditButton } from "./run-audit-button";
+
+const SCREENSHOT_SIGNED_URL_TTL_SECONDS = 3600;
+const DEVICE_TYPES: DeviceType[] = ["mobile", "desktop"];
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -66,6 +70,34 @@ export default async function LeadDetailPage({
           .order("points", { ascending: false })
       ).data ?? []
     : [];
+
+  const screenshots = latestAudit
+    ? (
+        await supabase
+          .from("screenshots")
+          .select("*")
+          .eq("audit_id", latestAudit.id)
+      ).data ?? []
+    : [];
+
+  const screenshotByDevice = new Map(screenshots.map((s) => [s.device_type, s]));
+
+  const signedScreenshotUrls = Object.fromEntries(
+    await Promise.all(
+      DEVICE_TYPES.map(async (device) => {
+        const screenshot = screenshotByDevice.get(device);
+        if (!screenshot) return [device, null] as const;
+        const { data: signed } = await supabase.storage
+          .from("screenshots")
+          .createSignedUrl(screenshot.storage_path, SCREENSHOT_SIGNED_URL_TTL_SECONDS);
+        return [device, signed?.signedUrl ?? null] as const;
+      }),
+    ),
+  ) as Record<DeviceType, string | null>;
+
+  const missingDeviceTypes = DEVICE_TYPES.filter((device) => !screenshotByDevice.has(device));
+  const canCaptureScreenshots =
+    website?.is_reachable === true && latestAudit !== null && missingDeviceTypes.length > 0;
 
   const claimableJob = (jobs ?? []).find((job) => job.status === "queued" || job.status === "pending");
   const pagespeed = latestAudit?.pagespeed_mobile as NormalizedPageSpeed | null;
@@ -200,6 +232,19 @@ export default async function LeadDetailPage({
           </section>
         ) : null}
 
+        {latestAudit && website?.is_reachable === true ? (
+          <section className="rounded-lg border border-zinc-200 bg-white p-6">
+            <h2 className="text-sm font-medium text-zinc-900">Screenshots</h2>
+            <div className="mt-3 grid grid-cols-2 gap-4">
+              <ScreenshotCard label="Mobile" url={signedScreenshotUrls.mobile} />
+              <ScreenshotCard label="Desktop" url={signedScreenshotUrls.desktop} />
+            </div>
+            {canCaptureScreenshots ? (
+              <CaptureScreenshotsButton businessId={businessId} auditId={latestAudit.id} />
+            ) : null}
+          </section>
+        ) : null}
+
         {latestAudit ? (
           <section className="rounded-lg border border-zinc-200 bg-white p-6">
             <h2 className="text-sm font-medium text-zinc-900">Website-need score</h2>
@@ -310,6 +355,29 @@ function Detail({ label, value }: { label: string; value: string | null | undefi
     <div>
       <dt className="text-xs uppercase tracking-wide text-zinc-400">{label}</dt>
       <dd className="text-zinc-800">{value || "—"}</dd>
+    </div>
+  );
+}
+
+function ScreenshotCard({ label, url }: { label: string; url: string | null }) {
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-wide text-zinc-400">{label}</p>
+      {url ? (
+        // Signed URLs are short-lived and dynamically generated per
+        // request, not a fixed domain suitable for next/image's static
+        // remotePatterns allowlist — a plain <img> is the simpler fit.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={url}
+          alt={`${label} homepage screenshot`}
+          className="mt-1 w-full rounded-md border border-zinc-200"
+        />
+      ) : (
+        <div className="mt-1 flex h-32 items-center justify-center rounded-md border border-dashed border-zinc-300 text-xs text-zinc-400">
+          Not captured
+        </div>
+      )}
     </div>
   );
 }

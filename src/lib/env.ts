@@ -30,6 +30,8 @@ const clientSchema = z.object({
 const serverSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   GOOGLE_PAGESPEED_API_KEY: z.string().min(1),
+  APIFY_API_TOKEN: z.string().min(1),
+  APIFY_SCREENSHOT_ACTOR_ID: z.string().min(1),
 });
 
 function parseClientEnv() {
@@ -51,6 +53,8 @@ function parseServerEnv() {
   const parsed = serverSchema.safeParse({
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
     GOOGLE_PAGESPEED_API_KEY: process.env.GOOGLE_PAGESPEED_API_KEY,
+    APIFY_API_TOKEN: process.env.APIFY_API_TOKEN,
+    APIFY_SCREENSHOT_ACTOR_ID: process.env.APIFY_SCREENSHOT_ACTOR_ID,
   });
 
   if (!parsed.success) {

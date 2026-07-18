@@ -139,7 +139,7 @@ schema are `verified`, `likely`, `manual_review` — use them honestly.
 | **3** | Manual "enter a URL" flow: `/leads/new` (Server Action), `/leads`, `/leads/[businessId]`; URL normalization (`tldts` for root domain); SSRF guard (DNS-resolution blocklist, re-validated on every redirect hop, no IP pinning); bounded reachability check (5-redirect cap, 8s timeout, no body reads); writes `businesses` → `websites` → `audit_jobs` sequentially with a compensating delete on downstream failure. |
 | **4** | PageSpeed integration (mobile only), normalization (`pagespeed_mobile`), 7 objective finding rules, website-need scoring, manual "Run basic audit" button (atomic claim, no worker), audit results on the lead detail page |
 | **5** | Copy-to-AI plain-text summary (`build-summary-text.ts`), finding verify/dismiss/restore actions (`updateFindingStatusAction`), live-computed effective website-need score (`effective-score.ts`) that excludes dismissed findings — `audit_scores` stays immutable |
-| 6 | Screenshots via Apify, Supabase Storage wiring, screenshot viewer |
+| **6** | Mobile + desktop homepage screenshots via Apify (`apify/screenshot-url`), private Supabase Storage bucket, signed-URL display, separate "Capture screenshots" button (`screenshots` table added by migration) |
 | 7 | Rule-based HTML scan: CTA detection, contact-form detection, trust signals, tech hints, freshness signals |
 | 8 | Google Places discovery: search form, business import, dedup |
 | 9 | Async job boundary made real: `/api/jobs/claim`, `/api/jobs/update`; local worker script |
@@ -160,7 +160,7 @@ add it preemptively; wait for explicit approval.
 
 ## Current phase
 
-**Phase 1 through Phase 5 — complete and fully verified.**
+**Phase 1 through Phase 6 — complete and fully verified.**
 
 Phase 3 added the manual single-website intake flow: `/leads/new` (a
 Next.js Server Action, not a public API route), `/leads` (list),
@@ -234,11 +234,58 @@ read/derived from existing data — no schema change:
   `dismissed`.
 - The copy button only renders when an audit exists for the lead.
 
-Both phases were confirmed via full end-to-end testing against the
-real dev Supabase project — see `README.md`'s "Development fixtures"
+Phase 6 added mobile + desktop homepage screenshots, entirely optional
+and additive — never touches `audits`/`audit_jobs`/`audit_findings`/
+`audit_scores` regardless of outcome:
+- New table `screenshots` (migration
+  `20260718000000_phase6_screenshots.sql`) — one row per successfully
+  captured device type per audit, `unique(audit_id, device_type)`. A
+  missing row means "not captured"; failed attempts are never
+  persisted, only logged server-side.
+- `src/lib/audit/apify-screenshot.ts` — calls the `apify/screenshot-url`
+  actor via Apify's REST API (`run-sync-get-dataset-items`), token sent
+  only via `Authorization: Bearer`, never a query string. Parses
+  `screenshotUrl` from the dataset item, requires it to be HTTPS, then
+  fetches the image with a 20s timeout, a 10MB size cap, and a strict
+  `image/png`-only content-type check — anything else (including JPEG)
+  is rejected rather than mislabeled. No automatic retry (each Apify
+  run costs money); a manual re-click of the button is the retry path.
+  **The actor's real input schema was fetched from Apify (its build's
+  `inputSchema`) rather than guessed** — it takes `urls: [{url}]` (not
+  a bare `url` string) and requires `waitUntil`/`delay`/`viewportWidth`.
+  It has **no height input at all**: the actor always captures the
+  page's full scrollable height at the given width, which is exactly
+  the full-page behavior this project wants, so there's nothing extra
+  to configure for that.
+- `src/lib/audit/capture-screenshots.ts` — captures mobile (width 390)
+  and desktop (width 1366) in parallel; `viewport_height` (844/768) is
+  stored on the `screenshots` row as a nominal reference value only —
+  it's never sent to the actor, since the actor has no height
+  parameter. Skips any device type that already has a row (idempotent
+  re-click); uploads to the private `screenshots` Storage bucket at
+  `{business_id}/{audit_id}/{device_type}.png`, then inserts the
+  metadata row. A unique-constraint violation on insert (a concurrent
+  duplicate attempt) is treated as success, not an error.
+- A separate **"Capture screenshots"** button on `/leads/[businessId]`
+  (`capture-screenshots-button.tsx` → `captureScreenshotsAction`) — not
+  merged into "Run basic audit," so PageSpeed stays fast and Apify
+  spend stays a deliberate, per-lead choice. Only rendered when the
+  website is known-reachable and an audit exists; hidden once both
+  device types are captured.
+- The lead detail page generates fresh 1-hour signed URLs server-side
+  on every load (`createSignedUrl`) — no public bucket, no long-lived
+  links. `APIFY_API_TOKEN` and `APIFY_SCREENSHOT_ACTOR_ID` are
+  server-only, added to `env.ts`'s server schema.
+- The Phase 6 migration also re-asserts `service_role` GRANTs on all
+  seven tables and sets `ALTER DEFAULT PRIVILEGES`, so a fresh database
+  built from the migration files alone no longer needs the manual
+  out-of-band fix Phase 3 required.
+
+All phases were confirmed via full end-to-end testing against the real
+dev Supabase project — see `README.md`'s "Development fixtures"
 section for the exact verified records.
 
-**Do not begin Phase 6 without explicit approval.**
+**Do not begin Phase 7 without explicit approval.**
 
 ## Postponed (not yet implemented — do not add without explicit approval)
 
@@ -268,7 +315,14 @@ section for the exact verified records.
 - Automated outreach / outreach status tracking
 - Adding a manual finding (verify/dismiss/restore only, as of Phase 5)
 - Google Places integration
-- Apify integration
+- Apify usage beyond homepage screenshots (`apify/screenshot-url` only,
+  as of Phase 6 — no crawling actor, no competitor analysis)
+- Full-page multi-page crawling (Phase 6's "full-page" screenshots
+  capture one page's entire scroll height, not multiple pages)
+- Above-the-fold/viewport-only screenshots (full-page only, as of
+  Phase 6) and any screenshot device type beyond mobile/desktop
+- Automatic retry of failed Apify screenshot runs (manual re-click
+  only, as of Phase 6 — deliberate, since each run costs money)
 - Make.com integration
 - Background/async workers
 - Vercel deployment

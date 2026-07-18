@@ -50,6 +50,8 @@ export type FindingConfidence = "verified" | "likely" | "manual_review";
 
 export type FindingStatus = "active" | "verified" | "dismissed";
 
+export type DeviceType = "mobile" | "desktop";
+
 export type Database = {
   public: {
     Tables: {
@@ -417,6 +419,66 @@ export type Database = {
           },
         ];
       };
+
+      screenshots: {
+        Row: {
+          id: string;
+          audit_id: string;
+          business_id: string;
+          device_type: DeviceType;
+          page_url: string;
+          storage_path: string;
+          viewport_width: number;
+          viewport_height: number;
+          full_page: boolean;
+          captured_at: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          audit_id: string;
+          business_id: string;
+          device_type: DeviceType;
+          page_url: string;
+          storage_path: string;
+          viewport_width: number;
+          viewport_height: number;
+          full_page?: boolean;
+          captured_at?: string;
+          created_at?: string;
+        };
+        // screenshots rows are immutable after creation — a device
+        // type either has one row (successfully captured) or none
+        // (not yet captured / failed); nothing is ever updated in
+        // place, only inserted.
+        Update: {
+          id?: string;
+          audit_id?: string;
+          business_id?: string;
+          device_type?: DeviceType;
+          page_url?: string;
+          storage_path?: string;
+          viewport_width?: number;
+          viewport_height?: number;
+          full_page?: boolean;
+          captured_at?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "screenshots_audit_id_fkey";
+            columns: ["audit_id"];
+            referencedRelation: "audits";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "screenshots_business_id_fkey";
+            columns: ["business_id"];
+            referencedRelation: "businesses";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
@@ -446,3 +508,6 @@ export type AuditFindingUpdate = Database["public"]["Tables"]["audit_findings"][
 
 export type AuditScore = Database["public"]["Tables"]["audit_scores"]["Row"];
 export type AuditScoreInsert = Database["public"]["Tables"]["audit_scores"]["Insert"];
+
+export type Screenshot = Database["public"]["Tables"]["screenshots"]["Row"];
+export type ScreenshotInsert = Database["public"]["Tables"]["screenshots"]["Insert"];
