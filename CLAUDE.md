@@ -160,7 +160,9 @@ add it preemptively; wait for explicit approval.
 
 ## Current phase
 
-**Phase 1 through Phase 9 — complete and fully verified.**
+**Phase 1 through Phase 10 — complete and verified (Phase 10's real-
+browser interaction check is pending the user's own click-through; see
+"Current phase" below).**
 
 Phase 3 added the manual single-website intake flow: `/leads/new` (a
 Next.js Server Action, not a public API route), `/leads` (list),
@@ -542,11 +544,133 @@ worker, no schema change:
   — see `README.md`'s "Development fixtures" for the full list and
   results.
 
+Phase 10 added outreach preparation (`/leads/[businessId]/outreach`) —
+turning existing audit evidence into a reviewable prospect brief and
+outreach draft, entirely template-driven, no AI API, no sending, no
+persistence:
+- **No Server Action, no mutation, no external fetch anywhere in this
+  feature** — a genuine architectural simplification versus every
+  prior phase. `src/lib/outreach/build-prospect-brief.ts` is a pure
+  content-assembly function (no I/O, no `server-only` guard) that runs
+  identically on the server (never invoked there) and, in practice,
+  entirely in the browser: the Client Component recomputes the brief
+  from already-loaded props on every checkbox/tone change, so the
+  preview is genuinely regenerated on demand with no round-trip.
+  Confirmed empirically: zero `fetch`/`XMLHttpRequest`/`axios` calls
+  exist anywhere in the outreach feature's code (grepped, not just
+  reasoned about) — external calls during interaction aren't just
+  untested, they're structurally impossible.
+- **Narrow, sanitized DTO boundary.** `page.tsx` (the server component)
+  builds an `OutreachBriefData` object containing only the explicitly
+  allowed business-facing fields (name, category, city/state/address,
+  phone, source label, website display URL + reachability, Google
+  rating/review count/maps URL, audit status, the live
+  `calculateEffectiveScore()` result, safe audit summary, homepage
+  title, sanitized findings, screenshot *availability* booleans, a
+  human-readable prepared date) — never a raw Supabase row, never
+  `raw_pagespeed_mobile`/`pagespeed_mobile` JSON, never `audit_jobs`
+  fields, never `google_place_id`/`phone_normalized`, never a storage
+  path or signed URL. A finding's real `id` is the one UUID that does
+  cross this boundary, used only as the local selection key (React key
+  + `selectedKeys` Set member) — never rendered or copied. Confirmed
+  empirically: zero UUID-shaped substrings anywhere in the page's
+  visible (non-`<script>`) HTML text across all five test fixtures.
+- **Screenshot signed URLs never enter the brief pipeline.**
+  `page.tsx` generates fresh signed URLs (same 1-hour-TTL pattern as
+  Phase 6) and passes them to the Client Component as a **separate**
+  prop from the sanitized DTO, used only for `<img>` thumbnail display.
+  `buildProspectBrief()`/`renderPlainText()`/`renderMarkdown()` never
+  see them — the brief only ever states screenshot *availability*
+  ("Mobile and desktop homepage screenshots are available... attach
+  them manually") and instructs the operator to review/attach
+  manually. Confirmed empirically on the Reachable Site Test fixture
+  (which has both device screenshots): the signed URL appears in the
+  page's `<img src>` attributes but is completely absent from the
+  copyable `<pre>` preview text.
+- **Confidence and status are never conflated.** Every finding carries
+  both independently; the UI groups findings by status (Verified/
+  Active/Dismissed) but always shows a confidence badge
+  (Verified/Likely/Manual review) alongside each one.
+  `buildProspectBrief()` routes purely by confidence for section
+  placement: `manual_review` goes to "Items to verify manually" only,
+  *regardless of status* — a `verified`-status finding with
+  `manual_review` confidence still cannot appear in "Top
+  opportunities." `findingCount` (used only in the opener's plain
+  numeric count) counts exclusively selected, non-`manual_review`
+  findings — never inferred as a signal of priority, severity, or
+  urgency. Confirmed by 623 passing pure-function assertions (see
+  below) plus a live fixture (the Divi Roofing demo's current latest
+  audit) that genuinely mixes a `manual_review` finding with two
+  `verified` ones and routes each to the correct section.
+- **Dismissed findings**: hidden and unselected by default; the
+  "Include dismissed findings" toggle only reveals them in the UI —
+  revealing never auto-selects, since selection is driven purely by
+  whether a finding's key is in `selectedKeys`, which the toggle never
+  touches.
+- **Tone presets** (`src/lib/outreach/tone-presets.ts`): three fixed,
+  literal, human-reviewed and explicitly approved phrase banks (Warm
+  and consultative / Direct and concise / Professional and analytical)
+  — no AI generation anywhere. Tone changes connective language,
+  opener structure, subject-line framing, and outline wording only;
+  facts, confidence, selected findings, evidence, the score, and audit
+  status are identical across all three tones by construction (they're
+  substituted into the templates unchanged, never regenerated).
+  Verified live across all three tones on the same fixture: openers
+  and subject lines differ, every fact (score, finding text,
+  confidence labels) is byte-identical.
+- **Wording discipline**: the score is always shown as "Internal
+  website-opportunity score: N/100" immediately followed by a fixed,
+  non-optional caveat sentence, never tone-varied. Unreachable websites
+  get one neutral sentence ("could not be reached during the recorded
+  audit attempt") — never a claim about the business being closed,
+  inactive, or losing customers. Missing Google data says "was not
+  imported for this business," never "does not exist." A
+  `failed`-status audit (a necessary small addition beyond the
+  originally-specified partial/unreachable branches, flagged here) gets
+  its own plain sentence rather than silently showing zero findings
+  with no explanation.
+- **Markdown escaping**: `render-markdown.ts` escapes
+  `` \ ` * _ [ ] < > # | `` in all business/finding-derived text before
+  embedding it (verified this neutralizes attempted `*bold*`,
+  `<script>`, and heading-injection payloads in a pure-function test);
+  website/Google-Maps URLs are deliberately left unescaped since
+  they're already-validated structured data, not free-form prose, and
+  escaping would risk corrupting a literal, copyable URL.
+- **Plain-text/markdown parity**: both renderers consume the identical
+  `ProspectBrief` object produced by `buildProspectBrief()` and make no
+  content decisions of their own (only formatting ones), so the two
+  outputs are factually identical by construction — verified directly
+  by stripping markdown syntax and diffing against the plain-text
+  output in a pure-function test.
+- **Testing**: 623 pure-function assertions (`npx tsx` against the real
+  modules via the project's existing `@/` path alias — no test runner
+  is configured in this project, so this ran as an ephemeral script,
+  not a committed test file) cover selection/routing rules, all empty-
+  state wordings, the partial/unreachable/Google-unavailable/failed
+  sentences, tone-invariance of facts, plain/markdown parity, markdown-
+  escaping payloads, absence of UUIDs/secrets/raw-JSON/DB-field-names
+  in output, and the 10-phrase prohibited-language regression list
+  (checked across all 3 tones × 3 audit statuses × 3 reachability
+  states) — all passing. Five real fixtures were exercised end-to-end
+  through the actual dev server (completed-with-screenshots, completed-
+  without-screenshots, unreachable, Places-imported with Google rating/
+  review data, and a mixed-confidence real audit).
+- **Known limitation, flagged rather than silently skipped**: this
+  sandboxed container cannot launch a real browser to click through the
+  checkboxes/tone selector/dismissed-toggle/copy buttons — headless
+  Chromium requires system shared libraries not present here, and
+  installing them needs `sudo`, which is never used. `chromium-cli` is
+  also unavailable. The user chose to verify this interaction layer
+  themselves against the running dev server rather than have this
+  skipped or worked around. Everything else (data boundary, template
+  correctness, tone/selection/routing logic, escaping, wording) was
+  verified as described above.
+
 All phases were confirmed via full end-to-end testing against the real
 dev Supabase project — see `README.md`'s "Development fixtures"
 section for the exact verified records.
 
-**Do not begin Phase 10 without explicit approval.**
+**Do not begin Phase 11 without explicit approval.**
 
 ## Postponed (not yet implemented — do not add without explicit approval)
 
@@ -581,7 +705,12 @@ section for the exact verified records.
   the triggers; there is no polling or scheduled processing
 - AI API calls of any kind (the Phase 5 copy button only builds and
   clipboard-copies plain text — no OpenAI/Anthropic call is ever made)
-- Automated outreach / outreach status tracking
+- Automated outreach / outreach status tracking (Phase 10 prepares a
+  brief and draft copy for the user to send manually; nothing is ever
+  sent automatically and no send-status is tracked)
+- Persisting outreach briefs, draft edits, versioning, or send-time
+  snapshots (Phase 10 generates on demand from current records only;
+  no `outreach_briefs` table exists — see "Current phase")
 - Adding a manual finding (verify/dismiss/restore only, as of Phase 5)
 - Apify usage beyond homepage screenshots (`apify/screenshot-url` only,
   as of Phase 6 — no crawling actor, no competitor analysis)

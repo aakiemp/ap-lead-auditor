@@ -11,7 +11,11 @@ against.
 
 ## Current status
 
-**Phase 1 through Phase 9 — complete and fully verified end-to-end.**
+**Phase 1 through Phase 10 — implemented and machine-verified
+end-to-end.** Phase 10's real-browser interaction check (checkboxes,
+tone selector, dismissed toggle, copy buttons) is pending the user's
+own click-through — this sandboxed container can't launch a real
+browser (see "Current status" below for why).
 
 Phase 1 — bare project scaffold:
 
@@ -233,9 +237,39 @@ only, no background worker, no schema change:
   click, and all execution controls on the page disable together
   while any one action is in flight.
 
+Phase 10 — outreach preparation (`/leads/[businessId]/outreach`), no
+AI API, no sending, no persistence:
+
+- Turns existing audit evidence into a plain-text or markdown
+  "prospect brief": business/website/Google-profile overview, audit
+  summary with a live-computed opportunity score, selectable findings
+  (grouped by status, each visibly labeled with its confidence —
+  Verified/Likely/Manual review), suggested email subjects/opener/body
+  outline/Loom outline.
+- **No Server Action, no mutation, no external fetch anywhere** — the
+  brief is a pure function recomputed entirely in the browser from
+  already-loaded page data on every checkbox/tone change; nothing is
+  saved, generated briefs and selections are never persisted.
+- A narrow, explicitly-allowed DTO is the only thing that crosses from
+  the server component to the Client Component — never a raw database
+  row, never PageSpeed JSON, never a storage path or signed URL, never
+  an `audit_jobs`/internal-error field. A finding's id is the one UUID
+  that crosses this boundary, used only as a local selection key that
+  is never rendered or copied.
+- Screenshot signed URLs are passed as a separate prop used only for
+  on-page thumbnail display — the copyable brief only ever states
+  availability ("screenshots are available... attach them manually")
+  and never contains a URL.
+- `manual_review`-confidence findings can only ever appear under "Items
+  to verify manually," regardless of their status — confidence and
+  status are tracked independently and never conflated.
+- Three fixed, human-reviewed tone presets (Warm/Direct/Professional)
+  vary connective language only; facts, confidence, evidence, and the
+  score are identical across all three by construction.
+
 No authentication, no Make.com integration, no business-value/
 contactability/priority scores, no automated worker, no AI API calls,
-no outreach automation, no deep/multi-page crawling yet.
+no automated outreach sending, no deep/multi-page crawling yet.
 
 ## Development fixtures
 
@@ -300,6 +334,31 @@ classification was verified by code inspection instead (it flows
 through the exact same, already-proven `writeAuditOutcome()` return
 path as `completed`/`failed`), not by a live trigger.
 
+Phase 10 (`/leads/[businessId]/outreach`) reused five existing
+fixtures rather than creating new ones — no new business/website/audit
+records were needed since the feature is read-only:
+
+| Fixture | What it exercised |
+|---|---|
+| Reachable Site Test (Phase 3/6 verify) | Completed audit **with** both mobile and desktop screenshots — confirmed the copyable preview text contains zero trace of the signed screenshot URLs (checked directly against the underlying HTML: the signed URL appears only in the page's `<img src>` thumbnail, never in the `<pre>` preview), while the "Screenshots are available... attach them manually" sentence renders correctly. |
+| Queue Test A (Phase 9 verify) | Completed audit **without** screenshots — correct "No homepage screenshots have been captured" wording. |
+| Unreachable Host Test (Phase 3 verify) | Unreachable-site wording — confirmed neutral phrasing ("could not be reached during the recorded audit attempt"), no Google data, no closed/inactive/neglected language. |
+| Good Coffee (Phase 8 verify) | Places-imported business — Google rating (4.7), review count (511), full formatted address, Maps URL, and search-context sentence ("Found via Google Places search for...") all rendered correctly with no `google_place_id` or other internal field leaking. |
+| HTML Scan Test - Divi Roofing Demo (Phase 7 verify) | Its current latest audit genuinely mixes two `verified`-confidence findings (routed correctly to Top Opportunities, using each finding's `description` text) with one `manual_review`-confidence finding (routed correctly to Items to Verify Manually only, never Top Opportunities) — real, live confirmation of the confidence-based routing rule, not just a synthetic test. |
+
+**Known testing limitation**: this sandboxed container cannot launch a
+real browser (headless Chromium needs system shared libraries not
+present here; installing them requires `sudo`, which is never used;
+`chromium-cli` was also unavailable). Interactive verification of the
+checkboxes, tone selector, dismissed-findings toggle, live preview,
+and both copy buttons was therefore not done by an automated click-
+through — it was verified instead through 623 passing pure-function
+assertions (`npx tsx` against the real `src/lib/outreach/*` modules,
+covering every selection/routing/tone/escaping rule) plus code review
+of the Client Component's wiring, consistent with what was approved
+for this phase. The dev server was left running for the user to
+click through `/leads/[businessId]/outreach` themselves.
+
 ## Getting started
 
 ```bash
@@ -350,6 +409,9 @@ src/
         finding-status-button.tsx # Client Component: verify/dismiss/restore
         copy-summary-button.tsx   # Client Component: clipboard copy
         capture-screenshots-button.tsx # Client Component wrapping captureScreenshotsAction
+        outreach/
+          page.tsx              # server component: builds the sanitized outreach DTO
+          outreach-builder.tsx   # Client Component: tone/findings/dismissed toggle, live preview, copy
     searches/
       page.tsx               # list of past searches
       new/
@@ -395,6 +457,11 @@ src/
       normalize-phone.ts     # pure function: raw phone -> +1XXXXXXXXXX or best-effort digits
       places-client.ts        # Places Text Search (New) fetch wrapper
       import-search.ts         # orchestrates search -> page -> filter -> dedup/import
+    outreach/
+      build-prospect-brief.ts # pure function: sanitized DTO + selection + tone -> structured brief
+      render-plain-text.ts     # pure function: brief -> plain text (no content decisions)
+      render-markdown.ts        # pure function: brief -> markdown, escapes user-controlled text
+      tone-presets.ts             # fixed, human-reviewed phrase banks (no AI)
     validation/
       website-intake.ts    # zod schema for the intake form
       search-intake.ts     # zod schema for the search form

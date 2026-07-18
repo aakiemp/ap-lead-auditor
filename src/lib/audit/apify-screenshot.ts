@@ -1,7 +1,18 @@
 import "server-only";
 
 const APIFY_API_BASE = "https://api.apify.com/v2";
-const RUN_TIMEOUT_MS = 60000;
+// Apify Actor run timeout, in seconds, sent via the `timeout` query
+// parameter on run-sync-get-dataset-items (confirmed against Apify's
+// official API reference — not guessed; this endpoint hard-caps any
+// run at 300s regardless, returning its own 408 past that). Both
+// screenshot runs previously failed in production because the old
+// 55s value was too short for the actor to complete a full-page
+// capture; raised to 120s.
+const ACTOR_TIMEOUT_SECONDS = 120;
+// App-side abort for the request wrapping that Actor run. Kept
+// deliberately longer than ACTOR_TIMEOUT_SECONDS so Apify's own
+// timeout response has time to arrive before our fetch aborts first.
+const RUN_TIMEOUT_MS = 135000;
 const IMAGE_FETCH_TIMEOUT_MS = 20000;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
@@ -44,7 +55,7 @@ interface CaptureOptions {
  * under a mismatched extension — see CLAUDE.md for why.
  */
 export async function captureScreenshot(options: CaptureOptions): Promise<CapturedImage> {
-  const runUrl = `${APIFY_API_BASE}/acts/${options.actorId}/run-sync-get-dataset-items?timeout=55`;
+  const runUrl = `${APIFY_API_BASE}/acts/${options.actorId}/run-sync-get-dataset-items?timeout=${ACTOR_TIMEOUT_SECONDS}`;
 
   let response: Response;
   try {

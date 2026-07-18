@@ -135,7 +135,17 @@ export default async function LeadDetailPage({
             </Link>
             <h1 className="mt-1 text-lg font-semibold tracking-tight">{business.name}</h1>
           </div>
-          {summaryText ? <CopySummaryButton text={summaryText} /> : null}
+          <div className="flex items-center gap-2">
+            {latestAudit ? (
+              <Link
+                href={`/leads/${businessId}/outreach`}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+              >
+                Prepare outreach
+              </Link>
+            ) : null}
+            {summaryText ? <CopySummaryButton text={summaryText} /> : null}
+          </div>
         </div>
       </header>
 
