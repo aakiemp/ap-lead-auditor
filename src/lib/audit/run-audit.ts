@@ -1,5 +1,6 @@
 import "server-only";
 
+import { updateAuditProgress } from "@/lib/audit/audit-progress";
 import { checkReachability, SsrfBlockedError as ReachabilitySsrfBlockedError } from "@/lib/audit/check-reachability";
 import {
   generateReachableFindings,
@@ -87,6 +88,18 @@ function emptyHomepageMeta(): HomepageMeta {
  * status-guarded UPDATE ever has its attempt value persisted, so a
  * losing concurrent claim attempt (see alreadyClaimed below) can never
  * cause a double-increment.
+ *
+ * progress_stage/progress_updated_at (Phase 9.5): written at each real
+ * stage transition via updateAuditProgress() (best-effort, never
+ * throws) or folded directly into an existing status-writing
+ * statement for claiming/completed/partial/failed, so status and
+ * terminal progress are always written atomically together. Purely
+ * informational for the /queue dashboard's live display — audit_jobs
+ * .status remains the only value any application logic branches on.
+ * PageSpeed and the homepage scan run concurrently, so there is
+ * deliberately one combined "analyzing_website" stage rather than a
+ * separate one for each. checking_reachability only appears for a
+ * job whose website had never been checked before this run.
  */
 export async function runAudit(jobId: string): Promise<RunAuditResult> {
   const supabase = createSupabaseServiceRoleClient();
@@ -116,13 +129,20 @@ export async function runAudit(jobId: string): Promise<RunAuditResult> {
       : preClaim.attempt
     : 1;
 
+  const claimedAt = new Date().toISOString();
   const { data: job, error: claimError } = await supabase
     .from("audit_jobs")
     .update({
       status: "auditing",
-      claimed_at: new Date().toISOString(),
+      claimed_at: claimedAt,
       claimed_by: CLAIMED_BY,
       attempt: nextAttempt,
+      // Phase 9.5: set in the same atomic statement that wins the
+      // claim, so a job is never visibly "auditing" without also
+      // showing a stage — informational only, never read by any
+      // status-determining logic (see CLAUDE.md).
+      progress_stage: "claiming",
+      progress_updated_at: claimedAt,
     })
     .eq("id", jobId)
     .in("status", ["queued", "pending"])
@@ -151,7 +171,12 @@ export async function runAudit(jobId: string): Promise<RunAuditResult> {
     console.error("[runAudit] website lookup failed:", websiteError);
     await supabase
       .from("audit_jobs")
-      .update({ status: "failed", error_message: "website_not_found" })
+      .update({
+        status: "failed",
+        error_message: "website_not_found",
+        progress_stage: "failed",
+        progress_updated_at: new Date().toISOString(),
+      })
       .eq("id", job.id);
     return { ok: false, error: "Could not find the website record for this audit." };
   }
@@ -165,6 +190,8 @@ export async function runAudit(jobId: string): Promise<RunAuditResult> {
   // persist the result before deciding how to proceed — null must not
   // be treated as "confirmed unreachable".
   if (website.is_reachable === null) {
+    await updateAuditProgress(supabase, job.id, "checking_reachability");
+
     let startUrl: URL;
     try {
       startUrl = parseAndNormalizeInputUrl(website.input_url).url;
@@ -175,7 +202,12 @@ export async function runAudit(jobId: string): Promise<RunAuditResult> {
       );
       await supabase
         .from("audit_jobs")
-        .update({ status: "failed", error_message: "invalid_target_url" })
+        .update({
+          status: "failed",
+          error_message: "invalid_target_url",
+          progress_stage: "failed",
+          progress_updated_at: new Date().toISOString(),
+        })
         .eq("id", job.id);
       return { ok: false, error: "This website's URL could not be audited." };
     }
@@ -235,7 +267,12 @@ export async function runAudit(jobId: string): Promise<RunAuditResult> {
       console.error("[runAudit] failed to persist reachability check:", updateError);
       await supabase
         .from("audit_jobs")
-        .update({ status: "failed", error_message: "reachability_write_failed" })
+        .update({
+          status: "failed",
+          error_message: "reachability_write_failed",
+          progress_stage: "failed",
+          progress_updated_at: new Date().toISOString(),
+        })
         .eq("id", job.id);
       return { ok: false, error: "Could not save the reachability check. Please try again." };
     }
@@ -273,10 +310,17 @@ export async function runAudit(jobId: string): Promise<RunAuditResult> {
     console.error("[runAudit] website final_url/input_url is not a valid URL");
     await supabase
       .from("audit_jobs")
-      .update({ status: "failed", error_message: "invalid_target_url" })
+      .update({
+        status: "failed",
+        error_message: "invalid_target_url",
+        progress_stage: "failed",
+        progress_updated_at: new Date().toISOString(),
+      })
       .eq("id", job.id);
     return { ok: false, error: "This website's URL could not be audited." };
   }
+
+  await updateAuditProgress(supabase, job.id, "analyzing_website");
 
   const [pagespeedSettled, scanSettled, sitemapRobotsSettled] = await Promise.allSettled([
     fetchMobilePageSpeed(targetUrl, serverEnv.GOOGLE_PAGESPEED_API_KEY),
@@ -437,6 +481,8 @@ async function writeAuditOutcome(
   job: AuditJobRow,
   outcome: AuditOutcome,
 ): Promise<RunAuditResult> {
+  await updateAuditProgress(supabase, job.id, "saving_results");
+
   const { data: audit, error: auditError } = await supabase
     .from("audits")
     .insert({
@@ -463,7 +509,12 @@ async function writeAuditOutcome(
     console.error("[runAudit] failed to insert audit record:", auditError);
     await supabase
       .from("audit_jobs")
-      .update({ status: "failed", error_message: "audit_write_failed" })
+      .update({
+        status: "failed",
+        error_message: "audit_write_failed",
+        progress_stage: "failed",
+        progress_updated_at: new Date().toISOString(),
+      })
       .eq("id", job.id);
     return { ok: false, error: "Could not save the audit results. Please try again." };
   }
@@ -472,7 +523,12 @@ async function writeAuditOutcome(
     // Outcome D: no findings/score for a full failure.
     const { error: jobUpdateError } = await supabase
       .from("audit_jobs")
-      .update({ status: outcome.jobStatus, error_message: outcome.jobErrorMessage })
+      .update({
+        status: outcome.jobStatus,
+        error_message: outcome.jobErrorMessage,
+        progress_stage: outcome.jobStatus,
+        progress_updated_at: new Date().toISOString(),
+      })
       .eq("id", job.id);
     if (jobUpdateError) {
       console.error("[runAudit] failed to mark job status after failed audit:", jobUpdateError);
@@ -503,11 +559,18 @@ async function writeAuditOutcome(
       await supabase.from("audits").delete().eq("id", audit.id);
       await supabase
         .from("audit_jobs")
-        .update({ status: "failed", error_message: "findings_write_failed" })
+        .update({
+          status: "failed",
+          error_message: "findings_write_failed",
+          progress_stage: "failed",
+          progress_updated_at: new Date().toISOString(),
+        })
         .eq("id", job.id);
       return { ok: false, error: "Could not save the audit findings. Please try again." };
     }
   }
+
+  await updateAuditProgress(supabase, job.id, "calculating_score");
 
   const { score, breakdown } = calculateWebsiteNeedScore(outcome.findings);
 
@@ -522,14 +585,23 @@ async function writeAuditOutcome(
     await supabase.from("audits").delete().eq("id", audit.id);
     await supabase
       .from("audit_jobs")
-      .update({ status: "failed", error_message: "score_write_failed" })
+      .update({
+        status: "failed",
+        error_message: "score_write_failed",
+        progress_stage: "failed",
+        progress_updated_at: new Date().toISOString(),
+      })
       .eq("id", job.id);
     return { ok: false, error: "Could not save the audit score. Please try again." };
   }
 
   const { error: jobUpdateError } = await supabase
     .from("audit_jobs")
-    .update({ status: outcome.jobStatus })
+    .update({
+      status: outcome.jobStatus,
+      progress_stage: outcome.jobStatus,
+      progress_updated_at: new Date().toISOString(),
+    })
     .eq("id", job.id);
 
   if (jobUpdateError) {

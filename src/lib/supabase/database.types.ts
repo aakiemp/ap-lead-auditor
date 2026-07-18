@@ -28,6 +28,19 @@ export type AuditJobStatus =
   | "failed"
   | "skipped";
 
+// Informational only — audit_jobs.status remains the sole source of
+// truth for queued/running/terminal. See the Phase 9.5 migration and
+// CLAUDE.md for the full rationale.
+export type AuditProgressStage =
+  | "claiming"
+  | "checking_reachability"
+  | "analyzing_website"
+  | "saving_results"
+  | "calculating_score"
+  | "completed"
+  | "partial"
+  | "failed";
+
 export type AuditStatus = "completed" | "partial" | "failed";
 
 export type FindingCategory =
@@ -207,6 +220,8 @@ export type Database = {
           claimed_at: string | null;
           idempotency_key: string | null;
           error_message: string | null;
+          progress_stage: AuditProgressStage | null;
+          progress_updated_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -221,6 +236,8 @@ export type Database = {
           claimed_at?: string | null;
           idempotency_key?: string | null;
           error_message?: string | null;
+          progress_stage?: AuditProgressStage | null;
+          progress_updated_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -235,6 +252,8 @@ export type Database = {
           claimed_at?: string | null;
           idempotency_key?: string | null;
           error_message?: string | null;
+          progress_stage?: AuditProgressStage | null;
+          progress_updated_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };

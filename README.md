@@ -11,11 +11,11 @@ against.
 
 ## Current status
 
-**Phase 1 through Phase 10 — implemented and machine-verified
-end-to-end.** Phase 10's real-browser interaction check (checkboxes,
-tone selector, dismissed toggle, copy buttons) is pending the user's
-own click-through — this sandboxed container can't launch a real
-browser (see "Current status" below for why).
+**Phase 1 through Phase 9.5, plus Phase 10 — implemented and
+machine-verified end-to-end.** Phase 9.5's and Phase 10's real-browser
+interaction checks are both pending the user's own click-through —
+this sandboxed container can't launch a real browser (see "Current
+status" below for why).
 
 Phase 1 — bare project scaffold:
 
@@ -237,6 +237,50 @@ only, no background worker, no schema change:
   click, and all execution controls on the page disable together
   while any one action is in flight.
 
+Phase 9.5 — visible, honest in-progress status on `/queue` (a small
+slot between Phase 9 and Phase 10, not a renumbering of either):
+
+- Two new nullable `audit_jobs` columns — `progress_stage` (8-value
+  `CHECK`, informational only) and `progress_updated_at`. `status`
+  remains the only value any application logic branches on.
+- `runAudit()` writes a real stage at each genuine transition —
+  `claiming` → (`checking_reachability`, only when previously unknown)
+  → `analyzing_website` (PageSpeed + the homepage scan run
+  concurrently, so this is deliberately one combined stage, not two)
+  → `saving_results` → `calculating_score` → `completed`/`partial`/
+  `failed`. Never estimated from elapsed time. `claiming` and the
+  three terminal stages are folded into the same statement that
+  already writes `status`, so the two can never disagree.
+- A real Postgres `CHECK` violation was forced directly against
+  `updateAuditProgress()` to confirm it logs sanitized output and
+  returns normally rather than throwing — a progress-write failure
+  cannot fail the audit.
+- **"Run next batch" is now resolve-then-execute**: a new read-only
+  action resolves the exact oldest eligible job ids first: the client
+  tracks those exact ids, then submits them through the same "Run
+  selected audits" path — never re-resolved at execution time, since
+  the queue can change in between. Verified live: a job claimed by
+  another process between resolution and execution came back
+  `skipped`, untouched, without corrupting the batch summary.
+- The progress bar and "N of M finished — X running, Y waiting"
+  summary are computed only from the exact ids the current action
+  submitted — never system-wide — and percentage is strictly
+  `finished / total` (an `auditing` job earns no partial credit).
+- Polling is a self-scheduling 3-second loop, scoped to the current
+  action's tracked ids, stopping once every tracked id is terminal.
+  The existing 15-minute stale badge is unchanged; a new relative
+  caption ("Updated 4 seconds ago") is shown alongside it.
+- **The core architectural risk was verified directly**: a real 4-job
+  batch's Server Action was fired in the background, and a separate
+  polling request fired 2 seconds into its ~26-second run returned in
+  167ms with genuinely live data — confirming the dev server does not
+  serialize concurrent requests, so true live progress during a long,
+  synchronous batch action is real on this architecture, not
+  theoretical. No WebSockets, SSE, Redis, cron, or background worker.
+- Scoped to `/queue` only, as approved; the lead-detail page's single
+  "Run basic audit" button is unchanged and now also writes progress
+  data via the shared instrumentation, just without its own UI yet.
+
 Phase 10 — outreach preparation (`/leads/[businessId]/outreach`), no
 AI API, no sending, no persistence:
 
@@ -334,6 +378,30 @@ classification was verified by code inspection instead (it flows
 through the exact same, already-proven `writeAuditOutcome()` return
 path as `completed`/`failed`), not by a live trigger.
 
+Phase 9.5 created several short-lived "Progress Test" leads (`A`–`G`,
+plus a few one-off fixtures) purely to populate `/queue` with fresh,
+fast-executing jobs for progress-instrumentation testing — most
+completed normally during testing and carry no lasting significance
+beyond that. One fixture was kept intentionally:
+
+| Fixture | What it exercised |
+|---|---|
+| Stale Progress Test | Forced directly into `status: 'auditing'`, `claimed_at` 20 minutes in the past, `progress_stage: 'analyzing_website'`, `progress_updated_at` 2 minutes in the past. `/queue` correctly showed **both** the existing 15-minute "Possibly stale" badge and the new "Updated 2 minutes ago" caption together, with the stage label ("Running performance and homepage checks…") unchanged — confirmed simply loading the page never resets or reruns it. Left in this state intentionally, alongside Phase 9's similar `Queue Test J`. |
+
+The critical "does polling actually work concurrently with a pending
+batch Server Action" question was verified directly rather than
+assumed: the dev build's own `server-reference-manifest.json` was used
+to find `getAuditProgressAction`'s real action id, allowing it to be
+invoked exactly as the browser would (a `Next-Action` header POST) —
+independent of the checkbox-driven form-submission protocol used
+everywhere else in this project's testing. A real 4-job batch was
+fired via curl in the background; 2 seconds into its ~26-second run, a
+separate polling request for the same 4 ids returned in **167ms**
+showing genuinely live data (2 jobs `auditing`/`analyzing_website`, 2
+still `queued`). A plain page `GET` fired the same way also returned
+promptly mid-batch. Neither serialized behind the pending batch
+request.
+
 Phase 10 (`/leads/[businessId]/outreach`) reused five existing
 fixtures rather than creating new ones — no new business/website/audit
 records were needed since the feature is read-only:
@@ -422,9 +490,10 @@ src/
         actions.ts               # "use server" — queueSelectedAction
         queue-selected-form.tsx  # Client Component: checkbox table + queue submit
     queue/
-      page.tsx           # queue dashboard — 5 status sections, stale-job warning
-      actions.ts          # "use server" — runSelectedAudits/runNextBatch/retryJob actions
-      queue-table.tsx      # Client Component: selection, batch size, shared pending state
+      page.tsx           # queue dashboard — 5 status sections, stale-job warning, progress columns
+      actions.ts          # "use server" — runSelectedAuditsAction/retryJobAction
+      progress-actions.ts  # "use server", read-only — resolveNextBatchJobIdsAction/getAuditProgressAction
+      queue-table.tsx       # Client Component: selection, batch size, live progress bar + polling
   lib/
     env.ts        # zod-validated environment variables (client + server)
     supabase/
@@ -443,6 +512,7 @@ src/
       run-audit-batch.ts      # bounded-concurrency (2) batch runner over runAudit()
       retry-job.ts             # atomic failed/partial -> queued reset, then runAudit()
       stale-job.ts              # pure function: is a Running job's claim old enough to flag?
+      audit-progress.ts          # updateAuditProgress() (best-effort write) + progressStageLabel()
       build-summary-text.ts  # pure function: data -> copy-to-AI plain text
       apify-screenshot.ts     # Apify REST client: run actor, fetch + validate image
       capture-screenshots.ts  # orchestrates parallel mobile+desktop capture, upload, insert
@@ -514,7 +584,13 @@ plain SQL files applied by hand rather than via `supabase db push`.
    indexes `businesses.phone_normalized` /`websites.root_domain` for
    the secondary duplicate-match check. Also re-asserts `service_role`
    GRANTs on its two new tables.
-7. Repeat for any later migration files, in filename (timestamp) order.
+7. Repeat for
+   `supabase/migrations/20260720000000_phase9_5_audit_progress.sql` —
+   adds `progress_stage` (`CHECK`-constrained, nullable) and
+   `progress_updated_at` (nullable) to the existing `audit_jobs`
+   table. No new table, so no grant changes needed — the existing
+   table-level grants already cover both columns.
+8. Repeat for any later migration files, in filename (timestamp) order.
 
 **Row level security:** every table has RLS **enabled with no
 policies**. This is intentional, not a placeholder to fill in later —

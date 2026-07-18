@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { runAuditBatch, type BatchSummary } from "@/lib/audit/run-audit-batch";
 import { retryAuditJob } from "@/lib/audit/retry-job";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/server";
-import { batchSizeSchema, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE } from "@/lib/validation/queue-batch";
+import { MAX_BATCH_SIZE } from "@/lib/validation/queue-batch";
 
 type SupabaseServiceRoleClient = ReturnType<typeof createSupabaseServiceRoleClient>;
 
@@ -74,47 +74,17 @@ export async function runSelectedAuditsAction(
   return { error: null, summary };
 }
 
-/**
- * Runs the oldest N available queued/pending basic jobs, where N is
- * the requested batch size (default/max enforced by batchSizeSchema).
- * If fewer than N jobs are available, runs all of them without
- * erroring -- `summary.selected` reflects the actual count picked.
- */
-export async function runNextBatchAction(
-  _prevState: RunBatchState,
-  formData: FormData,
-): Promise<RunBatchState> {
-  const parsedSize = batchSizeSchema.safeParse(formData.get("batchSize") ?? undefined);
-  const batchSize = parsedSize.success ? parsedSize.data : DEFAULT_BATCH_SIZE;
-
-  const supabase = createSupabaseServiceRoleClient();
-
-  const { data, error } = await supabase
-    .from("audit_jobs")
-    .select("id")
-    .eq("audit_depth", "basic")
-    .in("status", ["queued", "pending"])
-    .order("created_at", { ascending: true })
-    .limit(batchSize);
-
-  if (error) {
-    console.error("[runNextBatchAction] failed to fetch next batch:", error);
-    return { error: "Could not start the next batch right now. Please try again.", summary: null };
-  }
-
-  const jobIds = (data ?? []).map((row) => row.id);
-
-  if (jobIds.length === 0) {
-    return { error: "No queued jobs are available to run.", summary: null };
-  }
-
-  const summary = await runAuditBatch(jobIds);
-
-  revalidatePath("/queue");
-  revalidatePath("/leads");
-
-  return { error: null, summary };
-}
+// "Run next batch" as a combined resolve-and-execute action no longer
+// exists as of Phase 9.5 (see src/app/queue/progress-actions.ts):
+// resolveNextBatchJobIdsAction() resolves the exact oldest eligible
+// job ids first (read-only), the client stores them as its tracked
+// progress scope, then submits those exact ids through
+// runSelectedAuditsAction below -- the same execution path "Run
+// selected audits" already uses. Re-resolving jobs inside the
+// execution step itself was deliberately removed: the queue can
+// change between resolution and execution, and each id is still
+// atomically (re-)validated and claimed by runAudit() regardless, so
+// resolving ahead of time never reserves or guarantees a job.
 
 export interface RetryJobState {
   error: string | null;

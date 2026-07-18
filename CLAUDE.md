@@ -160,9 +160,9 @@ add it preemptively; wait for explicit approval.
 
 ## Current phase
 
-**Phase 1 through Phase 10 — complete and verified (Phase 10's real-
-browser interaction check is pending the user's own click-through; see
-"Current phase" below).**
+**Phase 1 through Phase 9.5 — complete and verified (Phase 10's real-
+browser interaction check is pending the user's own click-through;
+Phase 9.5's is too — see below).**
 
 Phase 3 added the manual single-website intake flow: `/leads/new` (a
 Next.js Server Action, not a public API route), `/leads` (list),
@@ -544,6 +544,116 @@ worker, no schema change:
   — see `README.md`'s "Development fixtures" for the full list and
   results.
 
+Phase 9.5 added visible, honest in-progress status to `/queue` — a
+small slot between Phase 9 and Phase 10, not a renumbering of either:
+- **Schema**: two new nullable columns on the existing `audit_jobs`
+  table, `progress_stage text` (`CHECK`-constrained to exactly 8
+  values: `claiming`, `checking_reachability`, `analyzing_website`,
+  `saving_results`, `calculating_score`, `completed`, `partial`,
+  `failed`) and `progress_updated_at timestamptz` — matching the
+  project's existing text+CHECK convention, not a native enum. Both
+  are **informational only**: `audit_jobs.status` remains the sole
+  value any application logic branches on (batch classification,
+  polling-stop, retry eligibility) — nothing was changed to read
+  `progress_stage` for a functional decision anywhere.
+- **`src/lib/audit/audit-progress.ts`** — `updateAuditProgress()` is a
+  best-effort, non-throwing write scoped to `WHERE id = $1 AND status
+  = 'auditing'`, called from `run-audit.ts` at each real stage
+  transition (never estimated from elapsed time). `claiming` and the
+  three terminal stages are instead folded directly into the same
+  statement that already writes `audit_jobs.status` for those cases
+  (the atomic claim, and every terminal/failure write) — so status and
+  terminal progress can never momentarily disagree, and no extra round
+  trip is needed. `progressStageLabel()` is a pure function shared by
+  the server-rendered initial page and the client polling loop, so the
+  very first render and every subsequent poll produce identical label
+  text.
+- **PageSpeed and the homepage scan run concurrently**, so there is
+  deliberately one combined `analyzing_website` stage ("Running
+  performance and homepage checks…") rather than two — not a
+  limitation, a direct reflection of the real, unchanged execution
+  order. `checking_reachability` only appears for a job whose website
+  had never been checked before this run (the Phase 8 null-reachability
+  path); a manually-created business with already-known reachability
+  skips straight to `analyzing_website`, confirmed against both cases
+  live.
+- **Verified empirically that a progress-write failure cannot fail the
+  audit**: forced a real Postgres `CHECK` constraint violation by
+  calling `updateAuditProgress()` with an invalid stage value directly
+  against a real job row — it logged a sanitized message
+  server-side, returned normally (did not throw), and left
+  `progress_stage` unchanged, exactly as designed.
+- **`/queue`'s "Run next batch" is now a three-step client flow**,
+  replacing the old single combined action: (1) a new read-only Server
+  Action, `resolveNextBatchJobIdsAction()`, resolves the exact oldest
+  eligible job ids (capped by the requested batch size) without
+  claiming anything; (2) the client stores those exact ids as its
+  tracked progress scope; (3) the client submits those exact ids
+  through the same `runSelectedAuditsAction` "Run selected audits"
+  already uses — deliberately **not** re-resolved at execution time,
+  since the queue can change in between, and every id is still
+  atomically (re-)validated and claimed by the unmodified `runAudit()`
+  regardless. Verified live: simulated a job being claimed by another
+  process between resolution and execution — the batch summary
+  correctly showed it as `skipped` (not `failed`, not miscounted) and
+  the row itself was left completely untouched, never overwritten.
+- **Batch progress is tracked by exact job id, never system-wide.** The
+  progress bar and its "N of M finished — X running, Y waiting" summary
+  are computed only from the specific ids the current action just
+  submitted (the checked boxes, the resolved next-batch ids, or the one
+  retried id) — an unrelated job auditing elsewhere can never affect
+  this batch's math. Percentage is strictly `finished / total`; a job
+  that is merely `auditing` earns no partial credit (verified live: a
+  4-job batch showed 0% while 2 were actively `auditing` and 2 were
+  still `queued`, only advancing as jobs actually reached
+  completed/partial/failed).
+- **`src/app/queue/progress-actions.ts`** — `getAuditProgressAction()`
+  accepts at most 10 already-validated job ids, queries only those ids
+  restricted to `audit_depth = 'basic'`, and returns only
+  `id`/`status`/`progress_stage`/`progress_updated_at` — no
+  business-sensitive or operational field. Returns a discriminated
+  `{ok:false}` (not an empty row list) on a query failure specifically
+  so the polling loop can tell "the read failed" apart from "nothing to
+  report" and retain its last-known UI state rather than clearing it.
+- **Polling** (`queue-table.tsx`): a self-scheduling `setTimeout` loop
+  (never `setInterval`, so a slow poll can't overlap the next one),
+  every 3 seconds, scoped to the current action's tracked ids only,
+  stopping entirely once every tracked id has reached a terminal
+  status. The existing 15-minute `claimed_at`-based "Possibly stale"
+  badge is unchanged; a new, separate relative caption ("Updated 4
+  seconds ago") is rendered from `progress_updated_at` alongside it —
+  verified together live on a deliberately-aged fixture.
+- **Verified the core architectural risk directly, not just assumed
+  it away**: fired a real 4-job batch's Server Action in the
+  background, then fired a separate polling request 2 seconds into
+  its ~26-second execution. The poll returned in **167ms** with
+  genuinely live data (2 jobs already `auditing`/`analyzing_website`,
+  2 still `queued`) — conclusive evidence the Next.js dev server does
+  **not** serialize concurrent requests from the same client, so true
+  live progress during a long, synchronous batch Server Action is
+  real, not theoretical, on this architecture. No WebSockets, SSE,
+  Redis, cron, or background worker were added or needed.
+- Retry re-progresses through the same stages on the same reused
+  `audit_jobs` row (unchanged from Phase 9); `attempt` is still
+  incremented only inside `runAudit()`'s own claim step, never by any
+  progress-related code — confirmed live (`attempt` read `3 → 4` on a
+  retry, with a fifth historical `audits` row untouched and a new one
+  added).
+- **Known, accepted limitation, same as Phase 10**: this sandboxed
+  container still cannot launch a real browser, so interactive
+  verification of the progress bar, per-row labels, and automatic
+  polling stopping was done via direct Server Action calls (using the
+  dev build's own `server-reference-manifest.json` to invoke
+  `getAuditProgressAction`/`resolveNextBatchJobIdsAction` exactly as
+  the browser would, bypassing the need for a real DOM) plus
+  server-rendered HTML inspection, not an actual click-through — left
+  to the user against the same dev server.
+- Scoped to `/queue` only, as approved — the lead-detail page's single
+  "Run basic audit" button continues to work unchanged (verified live)
+  and now also writes progress data via the shared instrumentation,
+  but has no dedicated progress UI in this phase; a natural, low-cost
+  follow-up given the instrumentation already exists.
+
 Phase 10 added outreach preparation (`/leads/[businessId]/outreach`) —
 turning existing audit evidence into a reviewable prospect brief and
 outreach draft, entirely template-driven, no AI API, no sending, no
@@ -700,6 +810,10 @@ section for the exact verified records.
 - Automatic recovery of a stuck (`auditing` for >15 minutes) job — the
   Phase 9 queue dashboard shows a "Possibly stale" warning only; no
   force-reset action exists yet (see "Current phase")
+- A dedicated progress UI on the lead-detail page's single "Run basic
+  audit" button — it already writes the same `progress_stage`/
+  `progress_updated_at` data as of Phase 9.5 (shared instrumentation),
+  but only `/queue` displays it
 - Automated/recurring audit workers — the Phase 4 "Run basic audit"
   button and the Phase 9 queue dashboard's manual batch buttons *are*
   the triggers; there is no polling or scheduled processing

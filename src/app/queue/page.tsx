@@ -64,6 +64,8 @@ export default async function QueuePage() {
       source: business?.source ?? "manual",
       searchLabel: search ? `${search.niche} — ${[search.city, search.state].filter(Boolean).join(", ")}` : null,
       status: job.status,
+      progressStage: job.progress_stage,
+      progressUpdatedAt: job.progress_updated_at,
       attempt: job.attempt,
       createdAt: job.created_at,
       claimedAt: job.claimed_at,
