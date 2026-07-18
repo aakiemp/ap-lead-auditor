@@ -1,7 +1,9 @@
+import Link from "next/link";
+
 const PHASES = [
-  { label: "Phase 1 — Project scaffold", status: "current" },
-  { label: "Phase 2 — Core database schema", status: "upcoming" },
-  { label: "Phase 3 — Manual URL submission + normalization", status: "upcoming" },
+  { label: "Phase 1 — Project scaffold", status: "done" },
+  { label: "Phase 2 — Core database schema", status: "done" },
+  { label: "Phase 3 — Manual URL submission + normalization", status: "current" },
   { label: "Phase 4 — PageSpeed integration + findings/scoring", status: "upcoming" },
   { label: "Phase 5 — Copy-to-AI summary", status: "upcoming" },
 ] as const;
@@ -20,10 +22,25 @@ export default function Home() {
         <div className="rounded-lg border border-zinc-200 bg-white p-6">
           <h2 className="text-sm font-medium text-zinc-900">Status</h2>
           <p className="mt-1 text-sm text-zinc-500">
-            Phase 1 scaffold. No search, audit, or scoring functionality is
-            implemented yet — this page is a placeholder confirming the app
-            boots and renders.
+            Phase 3: manual single-website intake, URL normalization, and an
+            SSRF-guarded reachability check are implemented. No PageSpeed,
+            findings, or scoring yet.
           </p>
+
+          <div className="mt-4 flex gap-3">
+            <Link
+              href="/leads"
+              className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+            >
+              View leads
+            </Link>
+            <Link
+              href="/leads/new"
+              className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white"
+            >
+              Add a lead
+            </Link>
+          </div>
 
           <ul className="mt-6 space-y-2">
             {PHASES.map((phase) => (
@@ -36,7 +53,9 @@ export default function Home() {
                   className={
                     phase.status === "current"
                       ? "rounded-full bg-zinc-900 px-2 py-0.5 text-xs font-medium text-white"
-                      : "rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-500"
+                      : phase.status === "done"
+                        ? "rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700"
+                        : "rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-500"
                   }
                 >
                   {phase.status}

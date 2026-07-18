@@ -15,7 +15,15 @@ import { z } from "zod";
  */
 
 const clientSchema = z.object({
-  NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
+  // Supabase client libraries expect the bare project URL (they append
+  // /rest/v1/... themselves). Some project dashboards surface the URL
+  // with /rest/v1 already appended, which would otherwise double up
+  // into a malformed path — strip it defensively here so a correctly
+  // configured .env.local isn't required to already be free of it.
+  NEXT_PUBLIC_SUPABASE_URL: z
+    .string()
+    .url()
+    .transform((url) => url.replace(/\/rest\/v1\/?$/, "").replace(/\/+$/, "")),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
 });
 

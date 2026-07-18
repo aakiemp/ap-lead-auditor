@@ -11,17 +11,15 @@ against.
 
 ## Current status
 
-**Phase 1 and Phase 2 only.**
+**Phase 1, 2, and 3 — complete and fully verified end-to-end.**
 
 Phase 1 — bare project scaffold:
 
 - Next.js App Router, TypeScript strict mode, Tailwind CSS, ESLint
-- A placeholder dashboard page (no real functionality)
 - Environment-variable validation structure (`src/lib/env.ts`)
 - Basic Supabase client/server plumbing (`src/lib/supabase/`)
 
-Phase 2 — core database schema (not yet applied to any Supabase
-project — see "Database" below):
+Phase 2 — core database schema:
 
 - SQL migration defining `businesses`, `websites`, `audit_jobs`,
   `audits`, `audit_findings`, `audit_scores`
@@ -29,11 +27,37 @@ project — see "Database" below):
   (`src/lib/supabase/database.types.ts`)
 - Row level security enabled on all six tables, with no policies
 
-No authentication, no application routes/forms, no external API
-integrations (Google Places, PageSpeed, Apify, Make.com), and no
-scoring/audit logic exist yet. The app still only renders one
-placeholder page — Phase 2 is schema-only, nothing reads or writes
-these tables yet.
+Phase 3 — manual single-website intake flow:
+
+- `/leads/new` — form (Next.js Server Action, not a public API route)
+  to manually add a business + website and queue a basic audit job
+- `/leads` — bare list of created leads
+- `/leads/[businessId]` — read-only detail view; unknown/malformed IDs
+  return a real 404 via `notFound()`
+- URL normalization (`src/lib/audit/normalize-url.ts`, using `tldts`
+  for registrable-domain extraction) and an SSRF guard
+  (`src/lib/security/ssrf-guard.ts`) that blocks private/loopback/
+  link-local/reserved IP ranges — including the cloud metadata range —
+  before any outbound request, re-checked on every redirect hop
+- A bounded reachability check (`src/lib/audit/check-reachability.ts`):
+  manual redirect following (max 5 hops), 8s total timeout, never reads
+  a response body
+- `src/lib/leads/create-manual-lead.ts` writes `businesses` →
+  `websites` → `audit_jobs` sequentially, with a compensating delete of
+  the business row (FK cascades clean up children) if a later insert
+  fails
+
+Verified against the real dev Supabase project: submitting a reachable
+site and an unreachable hostname both correctly create
+`businesses`/`websites`/`audit_jobs` rows, redirect to
+`/leads/[businessId]`, and show up in `/leads`. Two bugs surfaced and
+were fixed during that testing — see "Database" below and `CLAUDE.md`
+for details (an overly-permissive URL parser, and an env-var
+normalization gap for a Supabase URL that already had `/rest/v1`
+appended).
+
+No authentication, no PageSpeed integration, no findings/scoring, no
+Google Places/Apify/Make.com integration yet.
 
 ## Getting started
 
@@ -45,10 +69,9 @@ npm run dev
 
 Open http://localhost:3000.
 
-The app will start and render the placeholder dashboard even without a
-real `.env.local`, since nothing on the current page reads the Supabase
-plumbing yet. `.env.local` will become required once later phases wire
-up real Supabase calls.
+`.env.local` is now required for `/leads`, `/leads/new`, and
+`/leads/[businessId]` to work — they read/write Supabase directly. The
+root `/` dashboard still renders without it.
 
 ## Scripts
 
@@ -61,13 +84,30 @@ up real Supabase calls.
 
 ```
 src/
-  app/            # Next.js App Router pages
+  app/
+    page.tsx              # placeholder dashboard
+    leads/
+      page.tsx             # bare lead list
+      new/
+        page.tsx            # intake form (Client Component)
+        actions.ts          # "use server" — the intake Server Action
+      [businessId]/
+        page.tsx            # read-only lead detail
   lib/
     env.ts        # zod-validated environment variables (client + server)
     supabase/
       client.ts          # browser Supabase client (anon key)
-      server.ts          # server-only Supabase client (service role key)
-      database.types.ts  # hand-maintained types matching the migrations
+      server.ts           # server-only Supabase client (service role key)
+      database.types.ts   # hand-maintained types matching the migrations
+    security/
+      ssrf-guard.ts        # DNS-resolution IP blocklist
+    audit/
+      normalize-url.ts     # URL parsing/validation, root-domain extraction
+      check-reachability.ts # bounded, SSRF-guarded reachability check
+    validation/
+      website-intake.ts    # zod schema for the intake form
+    leads/
+      create-manual-lead.ts # orchestrates the Phase 3 writes
 
 supabase/
   migrations/     # SQL migrations, applied manually for now (see below)
@@ -116,6 +156,25 @@ from yet. If a migration changes the schema, update this file in the
 same change. Once the Supabase CLI is installed and linked to a real
 project (a later, explicit step — not part of Phase 1/2), it can be
 regenerated with `supabase gen types typescript`.
+
+**`service_role` table grants — resolved.** The Phase 2 migration didn't
+include explicit `GRANT` statements, and this project's `service_role`
+initially lacked table privileges on all six Phase 2 tables (confirmed
+via a direct PostgREST request returning
+`permission denied for table businesses`, code `42501`). Fixed by
+granting `SELECT, INSERT, UPDATE, DELETE` on all public tables and
+`USAGE, SELECT` on all public sequences to `service_role`, plus
+matching default privileges for future tables, applied directly against
+the project (not via a migration file, since it's a privilege change,
+not a schema change).
+
+**Supabase URL normalization — resolved in code.** This project's
+`.env.local` has `NEXT_PUBLIC_SUPABASE_URL` with `/rest/v1` already
+appended, which doubled into a malformed path
+(`PGRST125 Invalid path specified`) since Supabase client libraries
+append that path themselves. Rather than requiring `.env.local` to
+change, `src/lib/env.ts` now strips a trailing `/rest/v1` from the URL
+before it's used.
 
 ## Important
 

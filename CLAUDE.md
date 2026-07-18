@@ -112,7 +112,19 @@ schema are `verified`, `likely`, `manual_review` — use them honestly.
   (website audits, crawling) must validate the URL, block private IP
   ranges and localhost (SSRF protection), limit redirects, and limit
   response size. This applies from the first line of URL-fetching code,
-  not as a later hardening pass.
+  not as a later hardening pass. Implemented as of Phase 3:
+  `src/lib/security/ssrf-guard.ts` (DNS-resolution blocklist) and
+  `src/lib/audit/check-reachability.ts` (manual redirect following,
+  re-validated per hop, 5-redirect cap, 8s total timeout, no response
+  body reads).
+  - **Known accepted gap:** the guard validates DNS *before* connecting
+    at each hop but does not pin the connection to the resolved IP, so
+    a narrow DNS-rebinding window exists (a malicious DNS record could
+    theoretically change between the check and the actual request a
+    few milliseconds later). Accepted for this internal, single-user
+    MVP where URLs are typed in by the owner, not adversarial input.
+    Revisit with IP-pinned connections in the Phase 16 security pass if
+    this ever becomes multi-user or public-facing.
 - Sanitize any HTML snippets before storing/rendering them as evidence.
 - Rate-limit API endpoints once they exist.
 - Do not commit secrets. `.env.local` is gitignored; only
@@ -124,7 +136,7 @@ schema are `verified`, `likely`, `manual_review` — use them honestly.
 |---|---|
 | **1** | Next.js scaffold, TypeScript strict, Tailwind, ESLint, env-var validation structure, basic Supabase client/server plumbing, placeholder dashboard, README, CLAUDE.md |
 | **2** | Core database migration (`businesses`, `websites`, `audit_jobs`, `audits`, `audit_findings`, `audit_scores`), hand-maintained TypeScript types, RLS enabled with no policies (deny-all) on all six tables. No seed data yet. Still no auth. |
-| 3 | Manual "enter a URL" flow: create business+website+job records, URL normalization, SSRF guard |
+| **3** | Manual "enter a URL" flow: `/leads/new` (Server Action), `/leads`, `/leads/[businessId]`; URL normalization (`tldts` for root domain); SSRF guard (DNS-resolution blocklist, re-validated on every redirect hop, no IP pinning); bounded reachability check (5-redirect cap, 8s timeout, no body reads); writes `businesses` → `websites` → `audit_jobs` sequentially with a compensating delete on downstream failure. |
 | 4 | PageSpeed integration (mobile), normalization, findings generation, website-need scoring, audit detail page |
 | 5 | Copy-to-AI plain-text summary, finding verify/dismiss actions |
 | 6 | Screenshots via Apify, Supabase Storage wiring, screenshot viewer |
@@ -148,17 +160,42 @@ add it preemptively; wait for explicit approval.
 
 ## Current phase
 
-**Phase 1 and Phase 2 — complete.** Project scaffold (Next.js App
-Router, TypeScript strict, Tailwind, ESLint, env validation structure,
-Supabase client/server plumbing, placeholder dashboard) plus the core
-database schema: `businesses`, `websites`, `audit_jobs`, `audits`,
-`audit_findings`, `audit_scores`, with foreign keys, check constraints,
-indexes, `updated_at` triggers on mutable tables, and RLS enabled (no
-policies) on all six. The migration has **not** been applied to any
-Supabase project yet — see `README.md`'s "Database" section for the
-manual steps. No application code reads or writes these tables yet.
+**Phase 1, Phase 2, and Phase 3 — complete and fully verified.** Phase 3
+added the manual single-website intake flow: `/leads/new` (a Next.js
+Server Action, not a public API route), `/leads` (list),
+`/leads/[businessId]` (detail, uses `notFound()` for unknown/malformed
+IDs). URL normalization, an SSRF guard, and a bounded/redirect-
+revalidating reachability check all run server-side before any
+database write. Writes are sequential
+(`businesses` → `websites` → `audit_jobs`) with a compensating delete
+of the business row (cascades clean up children) if a downstream
+insert fails — not a transactional RPC, by design (see Phase 3
+decisions). `audit_depth` is hardcoded to `"basic"` for this form; no
+depth selector yet. All Supabase access stays server-side; no
+service-role client is imported into a Client Component.
 
-**Do not begin Phase 3 without explicit approval.**
+**Two real bugs were found and fixed during Phase 3 testing:**
+1. `src/lib/audit/normalize-url.ts` accepted syntactically-garbage
+   hostnames (e.g. `ht!tp://not a url` parsed as hostname `ht!tp`)
+   because WHATWG `URL` parsing doesn't validate DNS-name plausibility.
+   Fixed with an explicit hostname-shape check.
+2. `src/lib/env.ts` passed `NEXT_PUBLIC_SUPABASE_URL` straight through
+   even when it already had `/rest/v1` appended (as this project's
+   `.env.local` does), which doubled into a malformed path and made
+   every Supabase call fail with `PGRST125 Invalid path specified`.
+   Fixed by stripping a trailing `/rest/v1` in `env.ts`'s zod
+   transform, so the app tolerates this without `.env.local` needing to
+   change. A separate, now-resolved `service_role` grants gap (missing
+   `GRANT`s from the Phase 2 migration) was fixed directly by the user
+   in Supabase; both issues had to be fixed before writes worked.
+
+Both were confirmed fixed via full end-to-end testing against the real
+dev Supabase project: a reachable-site submission and an
+unreachable-hostname submission each correctly created
+`businesses`/`websites`/`audit_jobs` rows, redirected to the detail
+page, and appeared in the list page.
+
+**Do not begin Phase 4 without explicit approval.**
 
 ## Postponed (not yet implemented — do not add without explicit approval)
 
@@ -167,12 +204,10 @@ manual steps. No application code reads or writes these tables yet.
   itself is enabled with no policies as of Phase 2 — see "Current
   phase" — but real per-user policies wait for auth)
 - Seed data
-- Manual URL submission
 - PageSpeed integration
-- External website fetching
-- URL normalization
-- SSRF protection code (structure is planned per "Security rules"
-  above, but not implemented until the code that needs it exists)
+- External *content* fetching (title/meta/H1/CTA/form/trust-signal
+  scraping) — reachability-only fetching (no body reads) is implemented
+  as of Phase 3
 - Scoring logic
 - Findings generation
 - Copy-to-AI output
