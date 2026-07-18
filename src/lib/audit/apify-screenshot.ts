@@ -68,8 +68,17 @@ export async function captureScreenshot(options: CaptureOptions): Promise<Captur
       body: JSON.stringify({
         urls: [{ url: options.url }],
         format: "png",
-        waitUntil: "load",
-        delay: 1000,
+        // "load" previously hung indefinitely on pages with a slow or
+        // persistent third-party embed (Google Maps iframe, review
+        // widget, etc.) that never let the load event fire, consuming
+        // the full Actor timeout with zero crawl progress. "domcontentloaded"
+        // is an actor-schema-valid value that only waits for the HTML
+        // document itself to finish parsing, not every subresource.
+        waitUntil: "domcontentloaded",
+        // Raised from 1000ms to compensate: domcontentloaded fires
+        // before images/iframes paint, so a slightly longer fixed
+        // delay gives visible content a chance to render first.
+        delay: 3000,
         viewportWidth: options.viewportWidth,
         scrollToBottom: true,
       }),
