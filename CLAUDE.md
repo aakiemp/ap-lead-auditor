@@ -137,7 +137,7 @@ schema are `verified`, `likely`, `manual_review` — use them honestly.
 | **1** | Next.js scaffold, TypeScript strict, Tailwind, ESLint, env-var validation structure, basic Supabase client/server plumbing, placeholder dashboard, README, CLAUDE.md |
 | **2** | Core database migration (`businesses`, `websites`, `audit_jobs`, `audits`, `audit_findings`, `audit_scores`), hand-maintained TypeScript types, RLS enabled with no policies (deny-all) on all six tables. No seed data yet. Still no auth. |
 | **3** | Manual "enter a URL" flow: `/leads/new` (Server Action), `/leads`, `/leads/[businessId]`; URL normalization (`tldts` for root domain); SSRF guard (DNS-resolution blocklist, re-validated on every redirect hop, no IP pinning); bounded reachability check (5-redirect cap, 8s timeout, no body reads); writes `businesses` → `websites` → `audit_jobs` sequentially with a compensating delete on downstream failure. |
-| 4 | PageSpeed integration (mobile), normalization, findings generation, website-need scoring, audit detail page |
+| **4** | PageSpeed integration (mobile only), normalization (`pagespeed_mobile`), 7 objective finding rules, website-need scoring, manual "Run basic audit" button (atomic claim, no worker), audit results on the lead detail page |
 | 5 | Copy-to-AI plain-text summary, finding verify/dismiss actions |
 | 6 | Screenshots via Apify, Supabase Storage wiring, screenshot viewer |
 | 7 | Rule-based HTML scan: CTA detection, contact-form detection, trust signals, tech hints, freshness signals |
@@ -160,19 +160,17 @@ add it preemptively; wait for explicit approval.
 
 ## Current phase
 
-**Phase 1, Phase 2, and Phase 3 — complete and fully verified.** Phase 3
-added the manual single-website intake flow: `/leads/new` (a Next.js
-Server Action, not a public API route), `/leads` (list),
+**Phase 1 through Phase 4 — complete and fully verified.**
+
+Phase 3 added the manual single-website intake flow: `/leads/new` (a
+Next.js Server Action, not a public API route), `/leads` (list),
 `/leads/[businessId]` (detail, uses `notFound()` for unknown/malformed
 IDs). URL normalization, an SSRF guard, and a bounded/redirect-
 revalidating reachability check all run server-side before any
 database write. Writes are sequential
 (`businesses` → `websites` → `audit_jobs`) with a compensating delete
 of the business row (cascades clean up children) if a downstream
-insert fails — not a transactional RPC, by design (see Phase 3
-decisions). `audit_depth` is hardcoded to `"basic"` for this form; no
-depth selector yet. All Supabase access stays server-side; no
-service-role client is imported into a Client Component.
+insert fails — not a transactional RPC, by design.
 
 **Two real bugs were found and fixed during Phase 3 testing:**
 1. `src/lib/audit/normalize-url.ts` accepted syntactically-garbage
@@ -184,18 +182,36 @@ service-role client is imported into a Client Component.
    `.env.local` does), which doubled into a malformed path and made
    every Supabase call fail with `PGRST125 Invalid path specified`.
    Fixed by stripping a trailing `/rest/v1` in `env.ts`'s zod
-   transform, so the app tolerates this without `.env.local` needing to
-   change. A separate, now-resolved `service_role` grants gap (missing
-   `GRANT`s from the Phase 2 migration) was fixed directly by the user
-   in Supabase; both issues had to be fixed before writes worked.
+   transform. A separate `service_role` grants gap (missing `GRANT`s
+   from the Phase 2 migration) was fixed directly by the user in
+   Supabase.
 
-Both were confirmed fixed via full end-to-end testing against the real
-dev Supabase project: a reachable-site submission and an
-unreachable-hostname submission each correctly created
-`businesses`/`websites`/`audit_jobs` rows, redirected to the detail
-page, and appeared in the list page.
+Phase 4 added processing for existing `audit_jobs` rows: a "Run basic
+audit" button on `/leads/[businessId]` (`run-audit-button.tsx` →
+`actions.ts` → `src/lib/audit/run-audit.ts`) that atomically claims a
+`queued`/`pending` job (conditional `UPDATE ... WHERE status IN
+(...)`, so concurrent/duplicate clicks can only ever produce one
+audit), skips the PageSpeed call entirely when
+`website.is_reachable !== true` (producing a single verified
+"unreachable" finding and a website-need score of 35), otherwise calls
+PageSpeed Insights mobile (`src/lib/audit/pagespeed.ts`: 45s timeout,
+up to 2 retries with 2s/5s backoff on 5xx/network/timeout only, never
+on 4xx), normalizes the response (`normalize-pagespeed.ts`), generates
+up to 6 additional objective findings from category-score thresholds
+and the already-known HTTPS status (`generate-findings.ts`, pure
+function), and computes the website-need score
+(`scoring/website-need-score.ts`, pure function). `audits.status` uses
+only `completed`/`failed` in Phase 4 (`partial` unused). A failure
+after the `audits` row is created deletes it (cascades clean up
+findings/score) and marks the job `failed`, mirroring the Phase 3
+write pattern. `GOOGLE_PAGESPEED_API_KEY` is server-only, added to
+`env.ts`'s server schema.
 
-**Do not begin Phase 4 without explicit approval.**
+Both phases were confirmed via full end-to-end testing against the
+real dev Supabase project — see `README.md`'s "Development fixtures"
+section for the exact verified records.
+
+**Do not begin Phase 5 without explicit approval.**
 
 ## Postponed (not yet implemented — do not add without explicit approval)
 
@@ -204,12 +220,22 @@ page, and appeared in the list page.
   itself is enabled with no policies as of Phase 2 — see "Current
   phase" — but real per-user policies wait for auth)
 - Seed data
-- PageSpeed integration
+- Desktop PageSpeed (mobile only is implemented as of Phase 4)
 - External *content* fetching (title/meta/H1/CTA/form/trust-signal
   scraping) — reachability-only fetching (no body reads) is implemented
-  as of Phase 3
-- Scoring logic
-- Findings generation
+  as of Phase 3; homepage HTML fetch/parse for title/meta/H1 is
+  deliberately deferred to the broader HTML-scan phase (Phase 7) rather
+  than built once for Phase 4 and again for Phase 7
+- PageSpeed fields beyond the 4 category scores + 5 Core Web Vital
+  metrics: INP, TTFB, page weight/request count, itemized diagnostic
+  audits (render-blocking resources, unused JS/CSS, image issues, etc.)
+- Business-value score, contactability score, blended priority score
+  (website-need score only is implemented as of Phase 4)
+- Editable scoring settings / `scoring_rules` table usage
+- Audit re-running (only processing existing queued/pending jobs is
+  implemented as of Phase 4)
+- Automated/recurring audit workers — the Phase 4 "Run basic audit"
+  button *is* the trigger; there is no polling or scheduled processing
 - Copy-to-AI output
 - Google Places integration
 - Apify integration

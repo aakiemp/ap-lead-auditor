@@ -2,6 +2,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/server";
+import type { NormalizedPageSpeed } from "@/lib/audit/normalize-pagespeed";
+import type { ScoreBreakdownEntry } from "@/lib/scoring/website-need-score";
+
+import { RunAuditButton } from "./run-audit-button";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -36,6 +40,33 @@ export default async function LeadDetailPage({
       .eq("business_id", businessId)
       .order("created_at", { ascending: false }),
   ]);
+
+  const latestAudit = website
+    ? (
+        await supabase
+          .from("audits")
+          .select("*")
+          .eq("website_id", website.id)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      ).data
+    : null;
+
+  const [{ data: findings }, { data: score }] = latestAudit
+    ? await Promise.all([
+        supabase
+          .from("audit_findings")
+          .select("*")
+          .eq("audit_id", latestAudit.id)
+          .order("points", { ascending: false }),
+        supabase.from("audit_scores").select("*").eq("audit_id", latestAudit.id).maybeSingle(),
+      ])
+    : [{ data: null }, { data: null }];
+
+  const claimableJob = (jobs ?? []).find((job) => job.status === "queued" || job.status === "pending");
+  const pagespeed = latestAudit?.pagespeed_mobile as NormalizedPageSpeed | null;
+  const breakdown = (score?.breakdown as ScoreBreakdownEntry[] | null) ?? [];
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
@@ -101,7 +132,85 @@ export default async function LeadDetailPage({
               ))}
             </ul>
           )}
+          {claimableJob ? (
+            <RunAuditButton businessId={businessId} jobId={claimableJob.id} />
+          ) : null}
         </section>
+
+        {latestAudit ? (
+          <section className="rounded-lg border border-zinc-200 bg-white p-6">
+            <h2 className="text-sm font-medium text-zinc-900">Basic audit</h2>
+            <p className="mt-1 text-sm text-zinc-500">{latestAudit.summary}</p>
+
+            {latestAudit.status === "failed" ? (
+              <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+                This audit attempt failed
+                {jobs?.[0]?.error_message ? `: ${jobs[0].error_message}` : "."}
+              </p>
+            ) : null}
+
+            {pagespeed ? (
+              <>
+                <div className="mt-4 grid grid-cols-4 gap-3">
+                  <ScoreCard label="Performance" value={pagespeed.performanceScore} />
+                  <ScoreCard label="Accessibility" value={pagespeed.accessibilityScore} />
+                  <ScoreCard label="SEO" value={pagespeed.seoScore} />
+                  <ScoreCard label="Best practices" value={pagespeed.bestPracticesScore} />
+                </div>
+
+                <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                  <Detail label="First Contentful Paint" value={pagespeed.firstContentfulPaintDisplay} />
+                  <Detail label="Largest Contentful Paint" value={pagespeed.largestContentfulPaintDisplay} />
+                  <Detail label="Cumulative Layout Shift" value={pagespeed.cumulativeLayoutShiftDisplay} />
+                  <Detail label="Total Blocking Time" value={pagespeed.totalBlockingTimeDisplay} />
+                  <Detail label="Speed Index" value={pagespeed.speedIndexDisplay} />
+                </dl>
+              </>
+            ) : null}
+          </section>
+        ) : null}
+
+        {score ? (
+          <section className="rounded-lg border border-zinc-200 bg-white p-6">
+            <h2 className="text-sm font-medium text-zinc-900">Website-need score</h2>
+            <p className="mt-1 text-3xl font-semibold text-zinc-900">{score.website_need_score}</p>
+            {breakdown.length > 0 ? (
+              <ul className="mt-3 space-y-1 text-sm">
+                {breakdown.map((entry) => (
+                  <li key={entry.ruleId} className="flex items-center justify-between">
+                    <span className="text-zinc-600">{entry.label}</span>
+                    <span className="font-medium text-zinc-900">+{entry.points}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-3 text-sm text-zinc-500">No point-earning findings.</p>
+            )}
+          </section>
+        ) : null}
+
+        {findings && findings.length > 0 ? (
+          <section className="rounded-lg border border-zinc-200 bg-white p-6">
+            <h2 className="text-sm font-medium text-zinc-900">Findings</h2>
+            <ul className="mt-3 space-y-3">
+              {findings.map((finding) => (
+                <li key={finding.id} className="rounded-md border border-zinc-200 p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-zinc-900">{finding.title}</span>
+                    <div className="flex gap-1.5">
+                      <Badge>{finding.severity}</Badge>
+                      <Badge>{finding.confidence}</Badge>
+                    </div>
+                  </div>
+                  <p className="mt-1 text-sm text-zinc-600">{finding.description}</p>
+                  <p className="mt-1 text-xs text-zinc-400">
+                    {finding.category} · +{finding.points} pts
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
       </main>
     </div>
   );
@@ -118,5 +227,22 @@ function Detail({ label, value }: { label: string; value: string | null | undefi
       <dt className="text-xs uppercase tracking-wide text-zinc-400">{label}</dt>
       <dd className="text-zinc-800">{value || "—"}</dd>
     </div>
+  );
+}
+
+function ScoreCard({ label, value }: { label: string; value: number | null }) {
+  return (
+    <div className="rounded-md border border-zinc-200 p-3 text-center">
+      <p className="text-xs uppercase tracking-wide text-zinc-400">{label}</p>
+      <p className="mt-1 text-xl font-semibold text-zinc-900">{value ?? "—"}</p>
+    </div>
+  );
+}
+
+function Badge({ children }: { children: string }) {
+  return (
+    <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-600">
+      {children}
+    </span>
   );
 }

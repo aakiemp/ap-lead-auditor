@@ -11,7 +11,7 @@ against.
 
 ## Current status
 
-**Phase 1, 2, and 3 — complete and fully verified end-to-end.**
+**Phase 1 through Phase 4 — complete and fully verified end-to-end.**
 
 Phase 1 — bare project scaffold:
 
@@ -47,17 +47,51 @@ Phase 3 — manual single-website intake flow:
   the business row (FK cascades clean up children) if a later insert
   fails
 
-Verified against the real dev Supabase project: submitting a reachable
-site and an unreachable hostname both correctly create
-`businesses`/`websites`/`audit_jobs` rows, redirect to
-`/leads/[businessId]`, and show up in `/leads`. Two bugs surfaced and
-were fixed during that testing — see "Database" below and `CLAUDE.md`
-for details (an overly-permissive URL parser, and an env-var
-normalization gap for a Supabase URL that already had `/rest/v1`
-appended).
+Phase 4 — processing queued audit jobs with PageSpeed (mobile only):
 
-No authentication, no PageSpeed integration, no findings/scoring, no
-Google Places/Apify/Make.com integration yet.
+- A **"Run basic audit"** button on `/leads/[businessId]`, shown only
+  when the lead has a `queued`/`pending` job. Atomically claims the job
+  (`UPDATE ... WHERE status IN ('queued','pending')`) so double-clicks
+  or two open tabs can never produce more than one audit.
+- `src/lib/audit/pagespeed.ts` — calls PageSpeed Insights (mobile
+  strategy, all 4 categories), 45s timeout, up to 2 retries with 2s/5s
+  backoff on transient failures only (never on 4xx)
+- `src/lib/audit/normalize-pagespeed.ts` — extracts the 4 category
+  scores + 5 Core Web Vital metrics (numeric + original display text)
+  into `audits.pagespeed_mobile`; `audits.raw_pagespeed_mobile` keeps
+  the entire untouched API response
+- `src/lib/audit/generate-findings.ts` and
+  `src/lib/scoring/website-need-score.ts` — pure functions (no I/O)
+  generating up to 7 objective findings (reachability, HTTPS, 4
+  PageSpeed category thresholds) and the website-need score
+- A website that isn't known-reachable (`is_reachable !== true`) never
+  triggers a PageSpeed call — it gets one verified "unreachable"
+  finding and a score of 35
+- A failure after the `audits` row is created deletes it (cascades
+  clean up findings/score) and marks the job `failed`, mirroring the
+  Phase 3 write pattern rather than a transactional RPC
+
+Verified against the real dev Supabase project — see "Development
+fixtures" below for exactly what was tested and what exists in the
+database. Two Phase 3 bugs surfaced and were fixed during earlier
+testing — see `CLAUDE.md` for details (an overly-permissive URL parser,
+and an env-var normalization gap for a Supabase URL that already had
+`/rest/v1` appended).
+
+No authentication, no desktop PageSpeed, no screenshots, no Google
+Places/Apify/Make.com integration, no business-value/contactability/
+priority scores, no audit re-running, no automated worker yet.
+
+## Development fixtures
+
+Three test leads exist in the dev Supabase project as known-good
+fixtures (not cleaned up — kept intentionally for future testing):
+
+| Business | Website | Result |
+|---|---|---|
+| Reachable Site Test (Phase 3 verify) | `https://example.com` | Audit completed. Performance 100, Accessibility 96, SEO 80, Best practices 96. 0 findings, website-need score 0. |
+| Unreachable Host Test (Phase 3 verify) | an `.invalid` hostname | Audit completed without a PageSpeed call. 1 finding ("Website unreachable", critical, verified). Website-need score 35. |
+| Duplicate Submission Test (Phase 4 verify) | `https://example.com` | Used to verify concurrent Run-audit clicks only ever produce one audit row. Same result profile as the first fixture. |
 
 ## Getting started
 
@@ -70,8 +104,11 @@ npm run dev
 Open http://localhost:3000.
 
 `.env.local` is now required for `/leads`, `/leads/new`, and
-`/leads/[businessId]` to work — they read/write Supabase directly. The
-root `/` dashboard still renders without it.
+`/leads/[businessId]` to work — they read/write Supabase directly, and
+`GOOGLE_PAGESPEED_API_KEY` is required for the "Run basic audit" button
+to succeed on a reachable website (a website that's already known to be
+unreachable never calls PageSpeed, so it works without the key). The
+root `/` dashboard still renders without any of it.
 
 ## Scripts
 
@@ -92,7 +129,9 @@ src/
         page.tsx            # intake form (Client Component)
         actions.ts          # "use server" — the intake Server Action
       [businessId]/
-        page.tsx            # read-only lead detail
+        page.tsx            # lead detail — business/website/audit/findings/score
+        actions.ts           # "use server" — the runAudit Server Action
+        run-audit-button.tsx # Client Component wrapping the action
   lib/
     env.ts        # zod-validated environment variables (client + server)
     supabase/
@@ -104,6 +143,12 @@ src/
     audit/
       normalize-url.ts     # URL parsing/validation, root-domain extraction
       check-reachability.ts # bounded, SSRF-guarded reachability check
+      pagespeed.ts          # PageSpeed API client (timeout + retry)
+      normalize-pagespeed.ts # raw Lighthouse JSON -> normalized fields
+      generate-findings.ts  # pure function: website+pagespeed -> findings
+      run-audit.ts           # orchestrates claim -> pagespeed -> writes
+    scoring/
+      website-need-score.ts # pure function: findings -> score + breakdown
     validation/
       website-intake.ts    # zod schema for the intake form
     leads/
@@ -115,10 +160,10 @@ supabase/
 
 ## Environment variables
 
-See `.env.example`. Only Supabase variables are validated in Phase 1.
-Google Places, PageSpeed, Apify, and Make.com variables will be added in
-later phases as those integrations are implemented — do not add real
-keys for them yet.
+See `.env.example`. Supabase variables are validated as of Phase 1;
+`GOOGLE_PAGESPEED_API_KEY` (server-only) as of Phase 4. Google Places,
+Apify, and Make.com variables will be added in later phases as those
+integrations are implemented — do not add real keys for them yet.
 
 **Use a development Supabase project only.** Do not point this app at a
 production project or real customer data at this stage.
