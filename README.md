@@ -11,7 +11,7 @@ against.
 
 ## Current status
 
-**Phase 1 through Phase 4 — complete and fully verified end-to-end.**
+**Phase 1 through Phase 5 — complete and fully verified end-to-end.**
 
 Phase 1 — bare project scaffold:
 
@@ -71,6 +71,24 @@ Phase 4 — processing queued audit jobs with PageSpeed (mobile only):
   clean up findings/score) and marks the job `failed`, mirroring the
   Phase 3 write pattern rather than a transactional RPC
 
+Phase 5 — finding review and the copy-to-AI summary:
+
+- **"Copy audit for ChatGPT or Claude"** button in the lead detail
+  header — plain text only, no raw PageSpeed JSON, no UUIDs, no
+  `error_message` values. Only shown when an audit exists.
+- Findings show **Verify**, **Dismiss**, and **Restore to active**
+  buttons (only for the statuses a finding isn't currently in), each a
+  small Server-Action-backed form, validated (UUID shape + enum) and
+  scoped by both finding id and business id before writing.
+- Findings are grouped into **Verified / Active / Manual review /
+  Dismissed** everywhere they're shown (on-page and in the copy text).
+- The **website-need score is always the live-computed effective
+  score** — sum of `points` from every non-dismissed finding. This is
+  the only score shown anywhere; the originally stored
+  `audit_scores.website_need_score` is never displayed separately and
+  is never mutated (`audits`/`audit_scores` stay immutable, same
+  principle as Phase 2–4).
+
 Verified against the real dev Supabase project — see "Development
 fixtures" below for exactly what was tested and what exists in the
 database. Two Phase 3 bugs surfaced and were fixed during earlier
@@ -80,7 +98,8 @@ and an env-var normalization gap for a Supabase URL that already had
 
 No authentication, no desktop PageSpeed, no screenshots, no Google
 Places/Apify/Make.com integration, no business-value/contactability/
-priority scores, no audit re-running, no automated worker yet.
+priority scores, no audit re-running, no automated worker, no AI API
+calls, no outreach automation yet.
 
 ## Development fixtures
 
@@ -90,7 +109,7 @@ fixtures (not cleaned up — kept intentionally for future testing):
 | Business | Website | Result |
 |---|---|---|
 | Reachable Site Test (Phase 3 verify) | `https://example.com` | Audit completed. Performance 100, Accessibility 96, SEO 80, Best practices 96. 0 findings, website-need score 0. |
-| Unreachable Host Test (Phase 3 verify) | an `.invalid` hostname | Audit completed without a PageSpeed call. 1 finding ("Website unreachable", critical, verified). Website-need score 35. |
+| Unreachable Host Test (Phase 3 verify) | an `.invalid` hostname | Audit completed without a PageSpeed call. 1 finding ("Website unreachable", critical). Website-need score 35. Also used in Phase 5 to test dismiss → restore → verify; its one finding's `status` ended the test cycle as `verified` (points/description unchanged throughout; the stored `audit_scores` row was never touched). |
 | Duplicate Submission Test (Phase 4 verify) | `https://example.com` | Used to verify concurrent Run-audit clicks only ever produce one audit row. Same result profile as the first fixture. |
 
 ## Getting started
@@ -130,8 +149,10 @@ src/
         actions.ts          # "use server" — the intake Server Action
       [businessId]/
         page.tsx            # lead detail — business/website/audit/findings/score
-        actions.ts           # "use server" — the runAudit Server Action
-        run-audit-button.tsx # Client Component wrapping the action
+        actions.ts           # "use server" — runAudit + updateFindingStatus actions
+        run-audit-button.tsx # Client Component wrapping runAuditAction
+        finding-status-button.tsx # Client Component: verify/dismiss/restore
+        copy-summary-button.tsx   # Client Component: clipboard copy
   lib/
     env.ts        # zod-validated environment variables (client + server)
     supabase/
@@ -147,8 +168,10 @@ src/
       normalize-pagespeed.ts # raw Lighthouse JSON -> normalized fields
       generate-findings.ts  # pure function: website+pagespeed -> findings
       run-audit.ts           # orchestrates claim -> pagespeed -> writes
+      build-summary-text.ts  # pure function: data -> copy-to-AI plain text
     scoring/
-      website-need-score.ts # pure function: findings -> score + breakdown
+      website-need-score.ts # pure function: findings -> score + breakdown (Phase 4, at creation time)
+      effective-score.ts    # pure function: findings -> live score, excludes dismissed (Phase 5, display/copy time)
     validation/
       website-intake.ts    # zod schema for the intake form
     leads/

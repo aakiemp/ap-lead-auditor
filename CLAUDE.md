@@ -138,7 +138,7 @@ schema are `verified`, `likely`, `manual_review` — use them honestly.
 | **2** | Core database migration (`businesses`, `websites`, `audit_jobs`, `audits`, `audit_findings`, `audit_scores`), hand-maintained TypeScript types, RLS enabled with no policies (deny-all) on all six tables. No seed data yet. Still no auth. |
 | **3** | Manual "enter a URL" flow: `/leads/new` (Server Action), `/leads`, `/leads/[businessId]`; URL normalization (`tldts` for root domain); SSRF guard (DNS-resolution blocklist, re-validated on every redirect hop, no IP pinning); bounded reachability check (5-redirect cap, 8s timeout, no body reads); writes `businesses` → `websites` → `audit_jobs` sequentially with a compensating delete on downstream failure. |
 | **4** | PageSpeed integration (mobile only), normalization (`pagespeed_mobile`), 7 objective finding rules, website-need scoring, manual "Run basic audit" button (atomic claim, no worker), audit results on the lead detail page |
-| 5 | Copy-to-AI plain-text summary, finding verify/dismiss actions |
+| **5** | Copy-to-AI plain-text summary (`build-summary-text.ts`), finding verify/dismiss/restore actions (`updateFindingStatusAction`), live-computed effective website-need score (`effective-score.ts`) that excludes dismissed findings — `audit_scores` stays immutable |
 | 6 | Screenshots via Apify, Supabase Storage wiring, screenshot viewer |
 | 7 | Rule-based HTML scan: CTA detection, contact-form detection, trust signals, tech hints, freshness signals |
 | 8 | Google Places discovery: search form, business import, dedup |
@@ -160,7 +160,7 @@ add it preemptively; wait for explicit approval.
 
 ## Current phase
 
-**Phase 1 through Phase 4 — complete and fully verified.**
+**Phase 1 through Phase 5 — complete and fully verified.**
 
 Phase 3 added the manual single-website intake flow: `/leads/new` (a
 Next.js Server Action, not a public API route), `/leads` (list),
@@ -207,11 +207,38 @@ findings/score) and marks the job `failed`, mirroring the Phase 3
 write pattern. `GOOGLE_PAGESPEED_API_KEY` is server-only, added to
 `env.ts`'s server schema.
 
+Phase 5 added finding review and the copy-to-AI summary, both entirely
+read/derived from existing data — no schema change:
+- `src/lib/scoring/effective-score.ts` (pure function): sums `points`
+  from every finding whose `status != 'dismissed'`. This is the
+  **only** website-need score shown anywhere in the app as of Phase 5
+  — the originally stored `audit_scores.website_need_score` is never
+  displayed separately (a deliberate simplification to avoid
+  "which number is real" confusion) and is never mutated.
+- `src/lib/audit/build-summary-text.ts` (pure function): assembles the
+  plain-text "Copy audit for ChatGPT or Claude" output from
+  already-fetched data. Never includes raw PageSpeed JSON, UUIDs, or
+  `error_message` values.
+- `updateFindingStatusAction` (`actions.ts`): validates
+  businessId/findingId (UUID shape) and targetStatus (must be
+  `active`/`verified`/`dismissed`) with zod before writing; scopes the
+  `UPDATE` by both finding id and business id; returns a safe generic
+  error string on failure or "not found," never a raw Postgres error.
+- Findings are grouped into four sections wherever they're shown
+  (on-page and in the copy text): Verified (`status='verified'`),
+  Active (`status='active'` and `confidence != 'manual_review'`),
+  Manual review (`status='active'` and `confidence='manual_review'` —
+  empty until Phase 7 introduces non-`verified`-confidence findings),
+  Dismissed (`status='dismissed'`, shown but excluded from the score).
+  "Restore to active" is available from either `verified` or
+  `dismissed`.
+- The copy button only renders when an audit exists for the lead.
+
 Both phases were confirmed via full end-to-end testing against the
 real dev Supabase project — see `README.md`'s "Development fixtures"
 section for the exact verified records.
 
-**Do not begin Phase 5 without explicit approval.**
+**Do not begin Phase 6 without explicit approval.**
 
 ## Postponed (not yet implemented — do not add without explicit approval)
 
@@ -236,7 +263,10 @@ section for the exact verified records.
   implemented as of Phase 4)
 - Automated/recurring audit workers — the Phase 4 "Run basic audit"
   button *is* the trigger; there is no polling or scheduled processing
-- Copy-to-AI output
+- AI API calls of any kind (the Phase 5 copy button only builds and
+  clipboard-copies plain text — no OpenAI/Anthropic call is ever made)
+- Automated outreach / outreach status tracking
+- Adding a manual finding (verify/dismiss/restore only, as of Phase 5)
 - Google Places integration
 - Apify integration
 - Make.com integration

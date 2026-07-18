@@ -1,10 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { createSupabaseServiceRoleClient } from "@/lib/supabase/server";
+import { buildAuditSummaryText } from "@/lib/audit/build-summary-text";
 import type { NormalizedPageSpeed } from "@/lib/audit/normalize-pagespeed";
-import type { ScoreBreakdownEntry } from "@/lib/scoring/website-need-score";
+import { calculateEffectiveScore } from "@/lib/scoring/effective-score";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase/server";
+import type { AuditFinding } from "@/lib/supabase/database.types";
 
+import { CopySummaryButton } from "./copy-summary-button";
+import { FindingStatusButton } from "./finding-status-button";
 import { RunAuditButton } from "./run-audit-button";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -53,28 +57,54 @@ export default async function LeadDetailPage({
       ).data
     : null;
 
-  const [{ data: findings }, { data: score }] = latestAudit
-    ? await Promise.all([
-        supabase
+  const findings = latestAudit
+    ? (
+        await supabase
           .from("audit_findings")
           .select("*")
           .eq("audit_id", latestAudit.id)
-          .order("points", { ascending: false }),
-        supabase.from("audit_scores").select("*").eq("audit_id", latestAudit.id).maybeSingle(),
-      ])
-    : [{ data: null }, { data: null }];
+          .order("points", { ascending: false })
+      ).data ?? []
+    : [];
 
   const claimableJob = (jobs ?? []).find((job) => job.status === "queued" || job.status === "pending");
   const pagespeed = latestAudit?.pagespeed_mobile as NormalizedPageSpeed | null;
-  const breakdown = (score?.breakdown as ScoreBreakdownEntry[] | null) ?? [];
+
+  const verifiedFindings = findings.filter((f) => f.status === "verified");
+  const activeFindings = findings.filter((f) => f.status === "active" && f.confidence !== "manual_review");
+  const manualReviewFindings = findings.filter(
+    (f) => f.status === "active" && f.confidence === "manual_review",
+  );
+  const dismissedFindings = findings.filter((f) => f.status === "dismissed");
+
+  const { score: effectiveScore, breakdown: effectiveBreakdown } = calculateEffectiveScore(findings);
+
+  const summaryText = latestAudit
+    ? buildAuditSummaryText({
+        business,
+        website,
+        pagespeed,
+        effectiveScore,
+        effectiveBreakdown,
+        verifiedFindings,
+        activeFindings,
+        manualReviewFindings,
+        dismissedFindings,
+      })
+    : null;
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
       <header className="border-b border-zinc-200 bg-white px-8 py-5">
-        <Link href="/leads" className="text-sm text-zinc-500 hover:text-zinc-700">
-          ← Leads
-        </Link>
-        <h1 className="mt-1 text-lg font-semibold tracking-tight">{business.name}</h1>
+        <div className="flex items-center justify-between">
+          <div>
+            <Link href="/leads" className="text-sm text-zinc-500 hover:text-zinc-700">
+              ← Leads
+            </Link>
+            <h1 className="mt-1 text-lg font-semibold tracking-tight">{business.name}</h1>
+          </div>
+          {summaryText ? <CopySummaryButton text={summaryText} /> : null}
+        </div>
       </header>
 
       <main className="mx-auto w-full max-w-3xl space-y-6 px-8 py-10">
@@ -170,13 +200,19 @@ export default async function LeadDetailPage({
           </section>
         ) : null}
 
-        {score ? (
+        {latestAudit ? (
           <section className="rounded-lg border border-zinc-200 bg-white p-6">
             <h2 className="text-sm font-medium text-zinc-900">Website-need score</h2>
-            <p className="mt-1 text-3xl font-semibold text-zinc-900">{score.website_need_score}</p>
-            {breakdown.length > 0 ? (
+            <p className="mt-1 text-3xl font-semibold text-zinc-900">{effectiveScore}</p>
+            {dismissedFindings.length > 0 ? (
+              <p className="mt-1 text-xs text-zinc-500">
+                {dismissedFindings.length} dismissed finding{dismissedFindings.length === 1 ? "" : "s"} excluded
+                from this score.
+              </p>
+            ) : null}
+            {effectiveBreakdown.length > 0 ? (
               <ul className="mt-3 space-y-1 text-sm">
-                {breakdown.map((entry) => (
+                {effectiveBreakdown.map((entry) => (
                   <li key={entry.ruleId} className="flex items-center justify-between">
                     <span className="text-zinc-600">{entry.label}</span>
                     <span className="font-medium text-zinc-900">+{entry.points}</span>
@@ -189,29 +225,77 @@ export default async function LeadDetailPage({
           </section>
         ) : null}
 
-        {findings && findings.length > 0 ? (
+        {findings.length > 0 ? (
           <section className="rounded-lg border border-zinc-200 bg-white p-6">
             <h2 className="text-sm font-medium text-zinc-900">Findings</h2>
-            <ul className="mt-3 space-y-3">
-              {findings.map((finding) => (
-                <li key={finding.id} className="rounded-md border border-zinc-200 p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-zinc-900">{finding.title}</span>
-                    <div className="flex gap-1.5">
-                      <Badge>{finding.severity}</Badge>
-                      <Badge>{finding.confidence}</Badge>
-                    </div>
-                  </div>
-                  <p className="mt-1 text-sm text-zinc-600">{finding.description}</p>
-                  <p className="mt-1 text-xs text-zinc-400">
-                    {finding.category} · +{finding.points} pts
-                  </p>
-                </li>
-              ))}
-            </ul>
+            <FindingGroup title="Verified" findings={verifiedFindings} businessId={businessId} />
+            <FindingGroup title="Active" findings={activeFindings} businessId={businessId} />
+            <FindingGroup title="Manual review needed" findings={manualReviewFindings} businessId={businessId} />
+            <FindingGroup title="Dismissed" findings={dismissedFindings} businessId={businessId} />
           </section>
         ) : null}
       </main>
+    </div>
+  );
+}
+
+function FindingGroup({
+  title,
+  findings,
+  businessId,
+}: {
+  title: string;
+  findings: AuditFinding[];
+  businessId: string;
+}) {
+  if (findings.length === 0) return null;
+
+  return (
+    <div className="mt-4 first:mt-3">
+      <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-400">{title}</h3>
+      <ul className="mt-2 space-y-3">
+        {findings.map((finding) => (
+          <li key={finding.id} className="rounded-md border border-zinc-200 p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-zinc-900">{finding.title}</span>
+              <div className="flex gap-1.5">
+                <Badge>{finding.severity}</Badge>
+                <Badge>{finding.confidence}</Badge>
+              </div>
+            </div>
+            <p className="mt-1 text-sm text-zinc-600">{finding.description}</p>
+            <p className="mt-1 text-xs text-zinc-400">
+              {finding.category} · +{finding.points} pts
+            </p>
+            <div className="mt-2 flex gap-2">
+              {finding.status !== "verified" ? (
+                <FindingStatusButton
+                  businessId={businessId}
+                  findingId={finding.id}
+                  targetStatus="verified"
+                  label="Verify"
+                />
+              ) : null}
+              {finding.status !== "dismissed" ? (
+                <FindingStatusButton
+                  businessId={businessId}
+                  findingId={finding.id}
+                  targetStatus="dismissed"
+                  label="Dismiss"
+                />
+              ) : null}
+              {finding.status !== "active" ? (
+                <FindingStatusButton
+                  businessId={businessId}
+                  findingId={finding.id}
+                  targetStatus="active"
+                  label="Restore to active"
+                />
+              ) : null}
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
