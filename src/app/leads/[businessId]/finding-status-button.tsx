@@ -29,7 +29,13 @@ export function FindingStatusButton({
       >
         {pending ? "…" : label}
       </button>
-      {state.error ? <p className="mt-1 text-xs text-red-600">{state.error}</p> : null}
+      <div aria-live="polite">
+        {state.error ? (
+          <p role="alert" className="mt-1 text-xs text-red-600">
+            {state.error}
+          </p>
+        ) : null}
+      </div>
     </form>
   );
 }

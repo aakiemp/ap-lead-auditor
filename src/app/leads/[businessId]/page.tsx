@@ -1,13 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { Badge, Card, CardHeader, TestDataBadge, type BadgeVariant } from "@/components/ui";
 import { buildAuditSummaryText } from "@/lib/audit/build-summary-text";
 import type { NormalizedPageSpeed } from "@/lib/audit/normalize-pagespeed";
 import { defaultLeadProfile, getFollowUpState, getTodayISODate } from "@/lib/pipeline/lead-profile";
 import { LEAD_STATUS_LABELS } from "@/lib/pipeline/pipeline-status";
+import { validateReturnTo } from "@/lib/nav/return-to";
 import { calculateEffectiveScore } from "@/lib/scoring/effective-score";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/server";
-import type { AuditFinding, DeviceType } from "@/lib/supabase/database.types";
+import type { AuditFinding, DeviceType, FindingConfidence, FindingSeverity } from "@/lib/supabase/database.types";
 
 import { CaptureScreenshotsButton } from "./capture-screenshots-button";
 import { CopySummaryButton } from "./copy-summary-button";
@@ -22,10 +24,14 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 export default async function LeadDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ businessId: string }>;
+  searchParams: Promise<{ returnTo?: string }>;
 }) {
   const { businessId } = await params;
+  const { returnTo } = await searchParams;
+  const leadsHref = validateReturnTo(returnTo);
 
   if (!UUID_PATTERN.test(businessId)) {
     notFound();
@@ -64,24 +70,22 @@ export default async function LeadDetailPage({
       ).data
     : null;
 
-  const findings = latestAudit
-    ? (
-        await supabase
+  // Both only depend on latestAudit.id and are otherwise independent
+  // of each other -- run concurrently rather than as two sequential
+  // round trips.
+  const [{ data: findingsData }, { data: screenshotsData }] = latestAudit
+    ? await Promise.all([
+        supabase
           .from("audit_findings")
           .select("*")
           .eq("audit_id", latestAudit.id)
-          .order("points", { ascending: false })
-      ).data ?? []
-    : [];
+          .order("points", { ascending: false }),
+        supabase.from("screenshots").select("*").eq("audit_id", latestAudit.id),
+      ])
+    : [{ data: null }, { data: null }];
 
-  const screenshots = latestAudit
-    ? (
-        await supabase
-          .from("screenshots")
-          .select("*")
-          .eq("audit_id", latestAudit.id)
-      ).data ?? []
-    : [];
+  const findings = findingsData ?? [];
+  const screenshots = screenshotsData ?? [];
 
   const screenshotByDevice = new Map(screenshots.map((s) => [s.device_type, s]));
 
@@ -114,11 +118,18 @@ export default async function LeadDetailPage({
 
   const { score: effectiveScore, breakdown: effectiveBreakdown } = calculateEffectiveScore(findings);
 
-  const { data: fetchedProfile } = await supabase
-    .from("lead_profiles")
-    .select("*")
-    .eq("business_id", businessId)
-    .maybeSingle();
+  // Independent of each other and of the audit data above -- both
+  // depend only on businessId, so they run concurrently rather than
+  // as two sequential round trips.
+  const [{ data: fetchedProfile }, { data: activity }] = await Promise.all([
+    supabase.from("lead_profiles").select("*").eq("business_id", businessId).maybeSingle(),
+    supabase
+      .from("lead_activity")
+      .select("id, from_status, to_status, created_at")
+      .eq("business_id", businessId)
+      .order("created_at", { ascending: false })
+      .limit(20),
+  ]);
 
   // Every business should have exactly one lead_profiles row (see the
   // Phase 11 migration) — this fallback is defensive only, not the
@@ -130,13 +141,6 @@ export default async function LeadDetailPage({
     leadProfile.status,
     getTodayISODate(),
   );
-
-  const { data: activity } = await supabase
-    .from("lead_activity")
-    .select("id, from_status, to_status, created_at")
-    .eq("business_id", businessId)
-    .order("created_at", { ascending: false })
-    .limit(20);
 
   const summaryText = latestAudit
     ? buildAuditSummaryText({
@@ -154,13 +158,24 @@ export default async function LeadDetailPage({
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
-      <header className="border-b border-zinc-200 bg-white px-8 py-5">
-        <div className="flex items-center justify-between">
+      <header className="border-b border-zinc-200 bg-white px-4 py-5 sm:px-8">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <Link href="/leads" className="text-sm text-zinc-500 hover:text-zinc-700">
-              ← Leads
-            </Link>
-            <h1 className="mt-1 text-lg font-semibold tracking-tight">{business.name}</h1>
+            <nav aria-label="Breadcrumb" className="text-sm text-zinc-500">
+              <Link href={leadsHref} className="hover:text-zinc-700">
+                Leads
+              </Link>
+              <span className="mx-1.5">/</span>
+              <span className="text-zinc-700">{business.name}</span>
+            </nav>
+            <h1 className="mt-1 text-lg font-semibold tracking-tight">
+              {business.name}
+              {business.is_test ? (
+                <span className="ml-2 align-middle">
+                  <TestDataBadge />
+                </span>
+              ) : null}
+            </h1>
           </div>
           <div className="flex items-center gap-2">
             {latestAudit ? (
@@ -176,7 +191,58 @@ export default async function LeadDetailPage({
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-3xl space-y-6 px-8 py-10">
+      <main className="mx-auto w-full max-w-3xl space-y-6 px-4 py-10 sm:px-8">
+        <Card>
+          <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-zinc-400">Website</dt>
+              <dd className="mt-0.5 truncate text-zinc-800">
+                {website?.final_url ?? website?.input_url ?? "—"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-zinc-400">Source</dt>
+              <dd className="mt-0.5 text-zinc-800">
+                {business.source === "google_places" ? "Google Places" : "Manual"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-zinc-400">Pipeline status</dt>
+              <dd className="mt-0.5 text-zinc-800">{LEAD_STATUS_LABELS[leadProfile.status]}</dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-zinc-400">Priority</dt>
+              <dd className="mt-0.5 text-zinc-800">{leadProfile.priority ?? "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-zinc-400">Latest audit</dt>
+              <dd className="mt-0.5 text-zinc-800">{latestAudit ? latestAudit.status : "Not run yet"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-zinc-400">Website-opportunity score</dt>
+              <dd className="mt-0.5 text-zinc-800">{latestAudit ? effectiveScore : "—"}</dd>
+            </div>
+          </dl>
+
+          <div className="mt-4 flex flex-wrap gap-2 border-t border-zinc-100 pt-4">
+            {claimableJob ? (
+              <RunAuditButton businessId={businessId} jobId={claimableJob.id} />
+            ) : null}
+            {latestAudit ? (
+              <Link
+                href={`/leads/${businessId}/outreach`}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+              >
+                Prepare outreach
+              </Link>
+            ) : null}
+            {canCaptureScreenshots ? (
+              <CaptureScreenshotsButton businessId={businessId} auditId={latestAudit!.id} />
+            ) : null}
+          </div>
+        </Card>
+
+        {/* Pipeline state -- current status controls plus its immutable history, kept visually adjacent */}
         <PipelinePanel
           businessId={businessId}
           data={{
@@ -190,10 +256,10 @@ export default async function LeadDetailPage({
           followUpState={followUpState}
         />
 
-        <section className="rounded-lg border border-zinc-200 bg-white p-6">
-          <h2 className="text-sm font-medium text-zinc-900">Status history</h2>
+        <Card>
+          <CardHeader>Status history</CardHeader>
           {!activity || activity.length === 0 ? (
-            <p className="mt-2 text-sm text-zinc-500">No status changes recorded yet.</p>
+            <p className="mt-2 text-sm text-zinc-500">No status changes have been recorded yet.</p>
           ) : (
             <ul className="mt-3 space-y-2 text-sm">
               {activity.map((entry) => (
@@ -206,74 +272,16 @@ export default async function LeadDetailPage({
               ))}
             </ul>
           )}
-        </section>
+        </Card>
 
-        <section className="rounded-lg border border-zinc-200 bg-white p-6">
-          <h2 className="text-sm font-medium text-zinc-900">Business</h2>
-          <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
-            <Detail label="City" value={business.city} />
-            <Detail label="State" value={business.state} />
-            <Detail label="Phone" value={business.phone} />
-            <Detail label="Source" value={business.source} />
-          </dl>
-        </section>
-
-        <section className="rounded-lg border border-zinc-200 bg-white p-6">
-          <h2 className="text-sm font-medium text-zinc-900">Website</h2>
-          {website ? (
-            <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
-              <Detail label="Submitted URL" value={website.input_url} />
-              <Detail label="Final URL" value={website.final_url} />
-              <Detail label="Reachable" value={formatBoolean(website.is_reachable)} />
-              <Detail label="HTTP status" value={website.http_status?.toString() ?? null} />
-              <Detail label="HTTPS enabled" value={formatBoolean(website.https_enabled)} />
-              <Detail label="Redirect count" value={website.redirect_count?.toString() ?? null} />
-              <Detail
-                label="HTTP → HTTPS redirect"
-                value={formatBoolean(website.http_to_https_redirect)}
-              />
-              <Detail label="Failure reason" value={website.failure_reason} />
-              <Detail
-                label="Last checked"
-                value={website.last_checked_at ? new Date(website.last_checked_at).toLocaleString() : null}
-              />
-            </dl>
-          ) : (
-            <p className="mt-3 text-sm text-zinc-500">No website record found.</p>
-          )}
-        </section>
-
-        <section className="rounded-lg border border-zinc-200 bg-white p-6">
-          <h2 className="text-sm font-medium text-zinc-900">Audit jobs</h2>
-          {!jobs || jobs.length === 0 ? (
-            <p className="mt-3 text-sm text-zinc-500">No audit jobs yet.</p>
-          ) : (
-            <ul className="mt-3 space-y-2 text-sm">
-              {jobs.map((job) => (
-                <li
-                  key={job.id}
-                  className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2"
-                >
-                  <span className="text-zinc-700">{job.audit_depth} audit</span>
-                  <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-600">
-                    {job.status}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {claimableJob ? (
-            <RunAuditButton businessId={businessId} jobId={claimableJob.id} />
-          ) : null}
-        </section>
-
+        {/* Audit summary -- PageSpeed scores and the website-need score together, since both answer "how did the audit go" */}
         {latestAudit ? (
-          <section className="rounded-lg border border-zinc-200 bg-white p-6">
-            <h2 className="text-sm font-medium text-zinc-900">Basic audit</h2>
+          <Card>
+            <CardHeader>Audit summary</CardHeader>
             <p className="mt-1 text-sm text-zinc-500">{latestAudit.summary}</p>
 
             {latestAudit.status === "failed" ? (
-              <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+              <p role="alert" className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
                 This audit attempt failed
                 {jobs?.[0]?.error_message ? `: ${jobs[0].error_message}` : "."}
               </p>
@@ -288,14 +296,14 @@ export default async function LeadDetailPage({
 
             {pagespeed ? (
               <>
-                <div className="mt-4 grid grid-cols-4 gap-3">
+                <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <ScoreCard label="Performance" value={pagespeed.performanceScore} />
                   <ScoreCard label="Accessibility" value={pagespeed.accessibilityScore} />
                   <ScoreCard label="SEO" value={pagespeed.seoScore} />
                   <ScoreCard label="Best practices" value={pagespeed.bestPracticesScore} />
                 </div>
 
-                <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                <dl className="mt-4 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
                   <Detail label="First Contentful Paint" value={pagespeed.firstContentfulPaintDisplay} />
                   <Detail label="Largest Contentful Paint" value={pagespeed.largestContentfulPaintDisplay} />
                   <Detail label="Cumulative Layout Shift" value={pagespeed.cumulativeLayoutShiftDisplay} />
@@ -304,70 +312,141 @@ export default async function LeadDetailPage({
                 </dl>
               </>
             ) : null}
-          </section>
+
+            <div className="mt-6 border-t border-zinc-100 pt-4">
+              <p className="text-xs uppercase tracking-wide text-zinc-400">Website-need score</p>
+              <p className="mt-1 text-3xl font-semibold text-zinc-900">{effectiveScore}</p>
+              {dismissedFindings.length > 0 ? (
+                <p className="mt-1 text-xs text-zinc-500">
+                  {dismissedFindings.length} dismissed finding{dismissedFindings.length === 1 ? "" : "s"} excluded
+                  from this score.
+                </p>
+              ) : null}
+              {effectiveBreakdown.length > 0 ? (
+                <ul className="mt-3 space-y-1 text-sm">
+                  {effectiveBreakdown.map((entry) => (
+                    <li key={entry.ruleId} className="flex items-center justify-between">
+                      <span className="text-zinc-600">{entry.label}</span>
+                      <span className="font-medium text-zinc-900">+{entry.points}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-3 text-sm text-zinc-500">No point-earning findings.</p>
+              )}
+            </div>
+          </Card>
         ) : null}
 
-        {latestAudit ? (
-          <section className="rounded-lg border border-zinc-200 bg-white p-6">
-            <h2 className="text-sm font-medium text-zinc-900">Homepage HTML</h2>
-            <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
-              <Detail label="Page title" value={latestAudit.homepage_title} />
-              <Detail label="Meta description" value={latestAudit.meta_description} />
-              <Detail label="Canonical URL" value={latestAudit.canonical_url} />
-              <Detail label="Robots meta" value={latestAudit.robots_meta} />
-              <Detail label="H1 text" value={latestAudit.h1_text} />
-              <Detail label="H1 count" value={latestAudit.h1_count?.toString() ?? null} />
-            </dl>
-          </section>
-        ) : null}
+        {/* Findings -- the primary evidence this whole audit produces, kept prominent and never behind a disclosure */}
+        <Card>
+          <CardHeader>Findings</CardHeader>
+          {findings.length === 0 ? (
+            <p className="mt-2 text-sm text-zinc-500">
+              {latestAudit ? "This audit produced no findings." : "No audit has been run yet."}
+            </p>
+          ) : (
+            <>
+              <FindingGroup title="Verified" findings={verifiedFindings} businessId={businessId} />
+              <FindingGroup title="Active" findings={activeFindings} businessId={businessId} />
+              <FindingGroup title="Manual review needed" findings={manualReviewFindings} businessId={businessId} />
+              <FindingGroup title="Dismissed" findings={dismissedFindings} businessId={businessId} />
+            </>
+          )}
+        </Card>
 
+        {/* Screenshots -- visual evidence, kept prominent */}
         {latestAudit && website?.is_reachable === true ? (
-          <section className="rounded-lg border border-zinc-200 bg-white p-6">
-            <h2 className="text-sm font-medium text-zinc-900">Screenshots</h2>
-            <div className="mt-3 grid grid-cols-2 gap-4">
+          <Card>
+            <CardHeader>Screenshots</CardHeader>
+            <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
               <ScreenshotCard label="Mobile" url={signedScreenshotUrls.mobile} />
               <ScreenshotCard label="Desktop" url={signedScreenshotUrls.desktop} />
             </div>
-            {canCaptureScreenshots ? (
-              <CaptureScreenshotsButton businessId={businessId} auditId={latestAudit.id} />
-            ) : null}
-          </section>
+          </Card>
         ) : null}
 
-        {latestAudit ? (
-          <section className="rounded-lg border border-zinc-200 bg-white p-6">
-            <h2 className="text-sm font-medium text-zinc-900">Website-need score</h2>
-            <p className="mt-1 text-3xl font-semibold text-zinc-900">{effectiveScore}</p>
-            {dismissedFindings.length > 0 ? (
-              <p className="mt-1 text-xs text-zinc-500">
-                {dismissedFindings.length} dismissed finding{dismissedFindings.length === 1 ? "" : "s"} excluded
-                from this score.
-              </p>
-            ) : null}
-            {effectiveBreakdown.length > 0 ? (
-              <ul className="mt-3 space-y-1 text-sm">
-                {effectiveBreakdown.map((entry) => (
-                  <li key={entry.ruleId} className="flex items-center justify-between">
-                    <span className="text-zinc-600">{entry.label}</span>
-                    <span className="font-medium text-zinc-900">+{entry.points}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="mt-3 text-sm text-zinc-500">No point-earning findings.</p>
-            )}
-          </section>
-        ) : null}
+        {/*
+          Technical details -- lower-priority, rarely-needed raw fields
+          (business record, website reachability internals, the job
+          history, raw homepage HTML metadata). Grouped into one
+          visually-subordinate card and left OPEN by default via a
+          native <details> element: this both signals lower priority
+          than the sections above and keeps every field fully in the
+          DOM and screen-reader-discoverable, never hidden behind an
+          interaction the operator has to know to trigger.
+        */}
+        <details open className="group rounded-lg border border-zinc-200 bg-white">
+          <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-zinc-700 sm:px-6">
+            Technical details
+          </summary>
+          <div className="space-y-6 border-t border-zinc-100 px-4 pb-6 pt-4 sm:px-6">
+            <div>
+              <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-400">Business</h3>
+              <dl className="mt-2 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+                <Detail label="City" value={business.city} />
+                <Detail label="State" value={business.state} />
+                <Detail label="Phone" value={business.phone} />
+                <Detail label="Source" value={business.source} />
+              </dl>
+            </div>
 
-        {findings.length > 0 ? (
-          <section className="rounded-lg border border-zinc-200 bg-white p-6">
-            <h2 className="text-sm font-medium text-zinc-900">Findings</h2>
-            <FindingGroup title="Verified" findings={verifiedFindings} businessId={businessId} />
-            <FindingGroup title="Active" findings={activeFindings} businessId={businessId} />
-            <FindingGroup title="Manual review needed" findings={manualReviewFindings} businessId={businessId} />
-            <FindingGroup title="Dismissed" findings={dismissedFindings} businessId={businessId} />
-          </section>
-        ) : null}
+            <div>
+              <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-400">Website</h3>
+              {website ? (
+                <dl className="mt-2 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+                  <Detail label="Submitted URL" value={website.input_url} />
+                  <Detail label="Final URL" value={website.final_url} />
+                  <Detail label="Reachable" value={formatBoolean(website.is_reachable)} />
+                  <Detail label="HTTP status" value={website.http_status?.toString() ?? null} />
+                  <Detail label="HTTPS enabled" value={formatBoolean(website.https_enabled)} />
+                  <Detail label="Redirect count" value={website.redirect_count?.toString() ?? null} />
+                  <Detail label="HTTP → HTTPS redirect" value={formatBoolean(website.http_to_https_redirect)} />
+                  <Detail label="Failure reason" value={website.failure_reason} />
+                  <Detail
+                    label="Last checked"
+                    value={website.last_checked_at ? new Date(website.last_checked_at).toLocaleString() : null}
+                  />
+                </dl>
+              ) : (
+                <p className="mt-2 text-sm text-zinc-500">No website record found.</p>
+              )}
+            </div>
+
+            <div>
+              <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-400">Audit jobs</h3>
+              {!jobs || jobs.length === 0 ? (
+                <p className="mt-2 text-sm text-zinc-500">No audit jobs yet.</p>
+              ) : (
+                <ul className="mt-2 space-y-2 text-sm">
+                  {jobs.map((job) => (
+                    <li
+                      key={job.id}
+                      className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2"
+                    >
+                      <span className="text-zinc-700">{job.audit_depth} audit</span>
+                      <Badge>{job.status}</Badge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {latestAudit ? (
+              <div>
+                <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-400">Homepage HTML</h3>
+                <dl className="mt-2 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+                  <Detail label="Page title" value={latestAudit.homepage_title} />
+                  <Detail label="Meta description" value={latestAudit.meta_description} />
+                  <Detail label="Canonical URL" value={latestAudit.canonical_url} />
+                  <Detail label="Robots meta" value={latestAudit.robots_meta} />
+                  <Detail label="H1 text" value={latestAudit.h1_text} />
+                  <Detail label="H1 count" value={latestAudit.h1_count?.toString() ?? null} />
+                </dl>
+              </div>
+            ) : null}
+          </div>
+        </details>
       </main>
     </div>
   );
@@ -392,9 +471,9 @@ function FindingGroup({
           <li key={finding.id} className="rounded-md border border-zinc-200 p-3">
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium text-zinc-900">{finding.title}</span>
-              <div className="flex gap-1.5">
-                <Badge>{finding.severity}</Badge>
-                <Badge>{finding.confidence}</Badge>
+              <div className="flex flex-wrap justify-end gap-1.5">
+                <Badge variant={severityVariant(finding.severity)}>{finding.severity}</Badge>
+                <Badge variant={confidenceVariant(finding.confidence)}>{finding.confidence}</Badge>
               </div>
             </div>
             <p className="mt-1 text-sm text-zinc-600">{finding.description}</p>
@@ -480,10 +559,14 @@ function ScoreCard({ label, value }: { label: string; value: number | null }) {
   );
 }
 
-function Badge({ children }: { children: string }) {
-  return (
-    <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-600">
-      {children}
-    </span>
-  );
+function severityVariant(severity: FindingSeverity): BadgeVariant {
+  if (severity === "critical" || severity === "high") return "danger";
+  if (severity === "medium") return "warning";
+  return "neutral";
+}
+
+function confidenceVariant(confidence: FindingConfidence): BadgeVariant {
+  if (confidence === "verified") return "success";
+  if (confidence === "manual_review") return "warning";
+  return "neutral";
 }

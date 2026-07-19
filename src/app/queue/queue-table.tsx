@@ -3,6 +3,7 @@
 import { useActionState, useEffect, useState } from "react";
 import Link from "next/link";
 
+import { Badge, Button, TestDataBadge } from "@/components/ui";
 import { progressStageLabel } from "@/lib/audit/audit-progress";
 import { DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE } from "@/lib/validation/queue-batch";
 import type { AuditJobStatus, AuditProgressStage } from "@/lib/supabase/database.types";
@@ -17,6 +18,7 @@ export interface QueueJobRow {
   id: string;
   businessId: string;
   businessName: string;
+  isTest: boolean;
   websiteUrl: string | null;
   source: string;
   searchLabel: string | null;
@@ -161,25 +163,29 @@ export function QueueTable({ jobs }: { jobs: QueueJobRow[] }) {
 
   return (
     <div className="space-y-8">
-      {actionError ? (
-        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{actionError}</p>
-      ) : null}
+      <div aria-live="polite" className="space-y-3">
+        {actionError ? (
+          <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+            {actionError}
+          </p>
+        ) : null}
+
+        {summary ? (
+          <div className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            Selected {summary.selected} · Claimed {summary.claimed} · Completed {summary.completed} · Partial{" "}
+            {summary.partial} · Failed {summary.failed} · Skipped {summary.skipped}
+          </div>
+        ) : null}
+        {anyPending ? (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
+            Running audits — this may take several minutes. It is not safe to assume closing this tab
+            won&apos;t interrupt anything in progress.
+          </p>
+        ) : null}
+      </div>
 
       {trackedJobIds.length > 0 ? (
         <BatchProgressBar trackedJobIds={trackedJobIds} progressById={progressById} />
-      ) : null}
-
-      {summary ? (
-        <div className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-          Selected {summary.selected} · Claimed {summary.claimed} · Completed {summary.completed} · Partial{" "}
-          {summary.partial} · Failed {summary.failed} · Skipped {summary.skipped}
-        </div>
-      ) : null}
-      {anyPending ? (
-        <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
-          Running audits — this may take several minutes. It is not safe to assume closing this tab
-          won&apos;t interrupt anything in progress.
-        </p>
       ) : null}
 
       <section>
@@ -196,17 +202,13 @@ export function QueueTable({ jobs }: { jobs: QueueJobRow[] }) {
             className="mt-3 space-y-3"
           >
             <JobTable jobs={queued} nowMs={nowMs} selectable selected={selected} onToggle={toggle} disabled={anyPending} />
-            <button
-              type="submit"
-              disabled={anyPending || selected.size === 0}
-              className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-            >
+            <Button type="submit" variant="primary" disabled={anyPending || selected.size === 0}>
               {selectedPending ? "Running…" : `Run selected (${selected.size})`}
-            </button>
+            </Button>
           </form>
         )}
 
-        <div className="mt-4 flex items-center gap-3 border-t border-zinc-100 pt-4">
+        <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-zinc-100 pt-4">
           <label className="text-sm text-zinc-700">
             Batch size
             <input
@@ -220,14 +222,9 @@ export function QueueTable({ jobs }: { jobs: QueueJobRow[] }) {
               className="ml-2 w-16 rounded-md border border-zinc-300 px-2 py-1 text-sm disabled:opacity-50"
             />
           </label>
-          <button
-            type="button"
-            onClick={handleRunNextBatch}
-            disabled={anyPending}
-            className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 disabled:opacity-50"
-          >
+          <Button type="button" variant="secondary" onClick={handleRunNextBatch} disabled={anyPending}>
             {resolvingNextBatch ? "Resolving next batch…" : selectedPending ? "Running…" : "Run next batch"}
-          </button>
+          </Button>
         </div>
       </section>
 
@@ -264,10 +261,17 @@ export function QueueTable({ jobs }: { jobs: QueueJobRow[] }) {
         />
       </section>
 
-      <section>
-        <h2 className="text-sm font-medium text-zinc-900">Completed ({completed.length})</h2>
-        <JobTable jobs={completed} nowMs={nowMs} />
-      </section>
+      {completed.length > 0 ? (
+        <section>
+          {/* Distinct from the page's own separate, paginated "Completed"
+              section below this component -- this one only ever shows
+              jobs that just finished during a live poll of this batch,
+              so it's hidden entirely rather than showing a permanent,
+              always-empty "Completed (0)" heading. */}
+          <h2 className="text-sm font-medium text-zinc-900">Just completed ({completed.length})</h2>
+          <JobTable jobs={completed} nowMs={nowMs} />
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -336,22 +340,36 @@ function JobTable({
       <table className="w-full text-left text-sm">
         <thead className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase text-zinc-500">
           <tr>
-            {selectable ? <th className="px-4 py-2" /> : null}
-            <th className="px-4 py-2">Business</th>
-            <th className="px-4 py-2">Website</th>
-            <th className="px-4 py-2">Source / search</th>
-            <th className="px-4 py-2">Queued</th>
-            <th className="px-4 py-2">Last attempt</th>
-            <th className="px-4 py-2">Attempt #</th>
-            <th className="px-4 py-2">Status</th>
-            {retryFormAction ? <th className="px-4 py-2" /> : null}
+            {selectable ? <th scope="col" className="px-2 py-2 sm:px-4" /> : null}
+            <th scope="col" className="px-2 py-2 sm:px-4">
+              Business
+            </th>
+            <th scope="col" className="hidden px-4 py-2 lg:table-cell">
+              Website
+            </th>
+            <th scope="col" className="hidden px-4 py-2 md:table-cell">
+              Source / search
+            </th>
+            <th scope="col" className="hidden px-4 py-2 xl:table-cell">
+              Queued
+            </th>
+            <th scope="col" className="hidden px-4 py-2 xl:table-cell">
+              Last attempt
+            </th>
+            <th scope="col" className="hidden px-4 py-2 lg:table-cell">
+              Attempt #
+            </th>
+            <th scope="col" className="px-2 py-2 sm:px-4">
+              Status
+            </th>
+            {retryFormAction ? <th scope="col" className="px-2 py-2 sm:px-4" /> : null}
           </tr>
         </thead>
         <tbody>
           {jobs.map((job) => (
             <tr key={job.id} className="border-b border-zinc-100 last:border-0">
               {selectable ? (
-                <td className="px-4 py-2">
+                <td className="px-2 py-3 sm:px-4">
                   <input
                     type="checkbox"
                     name="jobId"
@@ -360,48 +378,56 @@ function JobTable({
                     onChange={() => onToggle?.(job.id)}
                     disabled={disabled}
                     className="h-4 w-4"
+                    aria-label={`Select ${job.businessName}`}
                   />
                 </td>
               ) : null}
-              <td className="px-4 py-2">
+              <td className="px-2 py-3 sm:px-4">
                 <Link href={`/leads/${job.businessId}`} className="font-medium text-zinc-900 hover:underline">
                   {job.businessName}
                 </Link>
+                {job.isTest ? (
+                  <span className="ml-2">
+                    <TestDataBadge />
+                  </span>
+                ) : null}
+                <div className="text-xs text-zinc-400 md:hidden">
+                  {job.source === "google_places" ? (job.searchLabel ?? "Google Places") : "Manual"}
+                  {job.websiteUrl ? ` · ${job.websiteUrl}` : ""}
+                </div>
               </td>
-              <td className="px-4 py-2 text-zinc-600">{job.websiteUrl ?? "—"}</td>
-              <td className="px-4 py-2 text-zinc-600">
+              <td className="hidden px-4 py-3 text-zinc-600 lg:table-cell">{job.websiteUrl ?? "—"}</td>
+              <td className="hidden px-4 py-3 text-zinc-600 md:table-cell">
                 {job.source === "google_places" ? (job.searchLabel ?? "Google Places") : "Manual"}
               </td>
-              <td className="px-4 py-2 text-zinc-600">{new Date(job.createdAt).toLocaleString()}</td>
-              <td className="px-4 py-2 text-zinc-600">
+              <td className="hidden px-4 py-3 text-zinc-600 xl:table-cell">
+                {new Date(job.createdAt).toLocaleString()}
+              </td>
+              <td className="hidden px-4 py-3 text-zinc-600 xl:table-cell">
                 {job.claimedAt ? new Date(job.claimedAt).toLocaleString() : "—"}
               </td>
-              <td className="px-4 py-2 text-zinc-600">{job.attempt}</td>
-              <td className="px-4 py-2 text-zinc-600">
+              <td className="hidden px-4 py-3 text-zinc-600 lg:table-cell">{job.attempt}</td>
+              <td className="px-2 py-3 text-zinc-600 sm:px-4">
                 <div>{progressStageLabel(job.status, job.progressStage)}</div>
                 {job.progressUpdatedAt && job.status === "auditing" ? (
                   <div className="text-xs text-zinc-400">{formatRelativeTime(job.progressUpdatedAt, nowMs)}</div>
                 ) : null}
                 {job.isStale ? (
-                  <span className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
-                    Possibly stale
-                  </span>
+                  <div className="mt-1">
+                    <Badge variant="warning">Possibly stale</Badge>
+                  </div>
                 ) : null}
                 {job.errorMessage ? (
                   <span className="mt-1 block text-xs text-red-600">{job.errorMessage}</span>
                 ) : null}
               </td>
               {retryFormAction ? (
-                <td className="px-4 py-2">
+                <td className="px-2 py-3 sm:px-4">
                   <form action={retryFormAction} onSubmit={() => onRetrySubmit?.(job.id)}>
                     <input type="hidden" name="jobId" value={job.id} />
-                    <button
-                      type="submit"
-                      disabled={disabled}
-                      className="rounded-md border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 disabled:opacity-50"
-                    >
+                    <Button type="submit" variant="secondary" disabled={disabled} className="px-3 py-1 text-xs">
                       Retry
-                    </button>
+                    </Button>
                   </form>
                 </td>
               ) : null}

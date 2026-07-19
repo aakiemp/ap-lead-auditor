@@ -24,3 +24,31 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* App-wide visible keyboard focus state -- applies to every
+   interactive element regardless of whether it's been migrated to
+   the shared component set, so this accessibility requirement is met
+   consistently rather than only on newly-touched pages. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #18181b;
+  outline-offset: 2px;
+}
+
+/* Defensive backstop for prefers-reduced-motion, in addition to
+   Tailwind's per-utility motion-safe:/motion-reduce: variants used
+   directly on individual elements (e.g. Skeleton). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

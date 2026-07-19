@@ -8,12 +8,37 @@ import { searchIntakeSchema } from "@/lib/validation/search-intake";
 export interface SearchFormState {
   error: string | null;
   fieldErrors: Record<string, string>;
+  values: {
+    niche: string;
+    city: string;
+    state: string;
+    zip: string;
+    maxResults: string;
+    minRating: string;
+    minReviews: string;
+    excludeNoWebsite: boolean;
+    isTest: boolean;
+  };
 }
 
 export async function submitSearch(
   _prevState: SearchFormState,
   formData: FormData,
 ): Promise<SearchFormState> {
+  // Echoed back on every failure path below so the form never clears
+  // what the operator already typed.
+  const values: SearchFormState["values"] = {
+    niche: (formData.get("niche") as string) ?? "",
+    city: (formData.get("city") as string) ?? "",
+    state: (formData.get("state") as string) ?? "",
+    zip: (formData.get("zip") as string) ?? "",
+    maxResults: (formData.get("maxResults") as string) ?? "",
+    minRating: (formData.get("minRating") as string) ?? "",
+    minReviews: (formData.get("minReviews") as string) ?? "",
+    excludeNoWebsite: formData.get("excludeNoWebsite") === "on",
+    isTest: formData.get("isTest") === "on",
+  };
+
   const raw = {
     niche: formData.get("niche"),
     city: formData.get("city"),
@@ -22,7 +47,8 @@ export async function submitSearch(
     maxResults: (formData.get("maxResults") as string) || undefined,
     minRating: (formData.get("minRating") as string) || undefined,
     minReviews: (formData.get("minReviews") as string) || undefined,
-    excludeNoWebsite: formData.get("excludeNoWebsite") === "on",
+    excludeNoWebsite: values.excludeNoWebsite,
+    isTest: values.isTest,
   };
 
   const parsed = searchIntakeSchema.safeParse(raw);
@@ -35,7 +61,7 @@ export async function submitSearch(
         fieldErrors[key] = issue.message;
       }
     }
-    return { error: "Please fix the highlighted fields.", fieldErrors };
+    return { error: "Please fix the highlighted fields.", fieldErrors, values };
   }
 
   let result;
@@ -49,10 +75,11 @@ export async function submitSearch(
       minRating: parsed.data.minRating ?? null,
       minReviews: parsed.data.minReviews ?? null,
       excludeNoWebsite: parsed.data.excludeNoWebsite,
+      isTest: parsed.data.isTest,
     });
   } catch (err) {
     console.error("[submitSearch] runSearch threw:", err);
-    return { error: "Could not run this search. Please try again.", fieldErrors: {} };
+    return { error: "Could not run this search. Please try again.", fieldErrors: {}, values };
   }
 
   redirect(`/searches/${result.searchId}`);

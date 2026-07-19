@@ -29,6 +29,7 @@ export interface RunSearchInput {
   minRating?: number | null;
   minReviews?: number | null;
   excludeNoWebsite: boolean;
+  isTest: boolean;
 }
 
 export interface RunSearchResult {
@@ -81,6 +82,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       min_rating: input.minRating ?? null,
       min_reviews: input.minReviews ?? null,
       exclude_no_website: input.excludeNoWebsite,
+      is_test: input.isTest,
       status: "pending",
     })
     .select("id")
@@ -164,7 +166,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   for (let i = 0; i < filtered.length; i++) {
     const place = filtered[i];
     try {
-      const imported = await importOnePlace(supabase, place);
+      const imported = await importOnePlace(supabase, place, input.isTest);
       businessesImported++;
       if (!imported.hasWebsite) businessesWithoutWebsite++;
 
@@ -281,10 +283,18 @@ interface ImportOnePlaceResult {
  * non-blank manual data with a blank Google value). Absent that, a new
  * business row is always created -- secondary phone/domain matches are
  * flag-only (duplicate_warning on search_businesses), never a merge.
+ *
+ * isTest only ever applies to a NEWLY created business row. A reused
+ * (google_place_id-matched) business keeps whatever is_test value it
+ * already has -- buildUpdatePayload deliberately never sets is_test,
+ * so an exploratory/test search can never flip an existing real lead
+ * to test, and conversely a production search reusing a business that
+ * happens to be marked test can never un-flip it either.
  */
 async function importOnePlace(
   supabase: SupabaseServiceRoleClient,
   place: PlacesSearchResultItem,
+  isTest: boolean,
 ): Promise<ImportOnePlaceResult> {
   const fields = extractPlaceFields(place);
 
@@ -335,6 +345,7 @@ async function importOnePlace(
     primary_category: fields.primaryCategory,
     categories: fields.categories,
     source: "google_places",
+    is_test: isTest,
     last_places_sync_at: new Date().toISOString(),
   };
 

@@ -1,7 +1,8 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 
+import { Badge, Button, Card, CardHeader, FormField } from "@/components/ui";
 import { LEAD_PRIORITIES, LEAD_PRIORITY_LABELS, LEAD_STATUSES, LEAD_STATUS_LABELS } from "@/lib/pipeline/pipeline-status";
 import { NOTES_MAX_LENGTH, OUTREACH_ANGLE_MAX_LENGTH } from "@/lib/validation/pipeline";
 import type { LeadPriority, LeadStatus } from "@/lib/supabase/database.types";
@@ -16,6 +17,7 @@ import {
 } from "./pipeline-actions";
 
 const ACTION_INITIAL: PipelineActionState = { error: null };
+const SAVED_MESSAGE_MS = 2000;
 
 export interface PipelinePanelData {
   status: LeadStatus;
@@ -27,6 +29,56 @@ export interface PipelinePanelData {
 }
 
 export type FollowUpBadgeState = "overdue" | "due_today" | "upcoming" | null;
+
+/**
+ * Tracks a transient "Saved" confirmation for one useActionState pair.
+ * Fires only on the pending->not-pending transition when the result
+ * was error-free (a real completed save, not the initial render), and
+ * self-clears after SAVED_MESSAGE_MS -- so a stale "Saved" can never
+ * still be showing by the time of a later, different attempt.
+ */
+function useSavedFeedback(pending: boolean, error: string | null) {
+  const [justSaved, setJustSaved] = useState(false);
+  const wasPending = useRef(false);
+
+  useEffect(() => {
+    if (wasPending.current && !pending && !error) {
+      setJustSaved(true);
+      const timeout = setTimeout(() => setJustSaved(false), SAVED_MESSAGE_MS);
+      wasPending.current = pending;
+      return () => clearTimeout(timeout);
+    }
+    wasPending.current = pending;
+  }, [pending, error]);
+
+  // Derived at render time rather than via a second setState call in
+  // the effect above -- a new pending submission should never show a
+  // stale "Saved" from a previous one, and this achieves that without
+  // an unconditional setState-in-effect.
+  return justSaved && !pending;
+}
+
+function SaveButton({ pending, label }: { pending: boolean; label: string }) {
+  return (
+    <Button type="submit" variant="secondary" disabled={pending} className="whitespace-nowrap">
+      {pending ? "Saving…" : label}
+    </Button>
+  );
+}
+
+function FieldFeedback({ error, saved, savedText }: { error: string | null; saved: boolean; savedText: string }) {
+  return (
+    <div aria-live="polite">
+      {error ? (
+        <p role="alert" className="mt-1 text-sm text-red-600">
+          {error}
+        </p>
+      ) : saved ? (
+        <p className="mt-1 text-sm text-emerald-600">{savedText}</p>
+      ) : null}
+    </div>
+  );
+}
 
 export function PipelinePanel({
   businessId,
@@ -49,6 +101,12 @@ export function PipelinePanel({
   const [angleState, angleFormAction, anglePending] = useActionState(angleAction, ACTION_INITIAL);
   const [datesState, datesFormAction, datesPending] = useActionState(datesAction, ACTION_INITIAL);
 
+  const statusSaved = useSavedFeedback(statusPending, statusState.error);
+  const prioritySaved = useSavedFeedback(priorityPending, priorityState.error);
+  const notesSaved = useSavedFeedback(notesPending, notesState.error);
+  const angleSaved = useSavedFeedback(anglePending, angleState.error);
+  const datesSaved = useSavedFeedback(datesPending, datesState.error);
+
   const [notesText, setNotesText] = useState(data.notes ?? "");
   const [angleText, setAngleText] = useState(data.outreachAngle ?? "");
   const [lastContactedDraft, setLastContactedDraft] = useState(data.lastContactedDate ?? "");
@@ -64,8 +122,8 @@ export function PipelinePanel({
   }
 
   return (
-    <div className="space-y-4 rounded-lg border border-zinc-200 bg-white p-6">
-      <h2 className="text-sm font-medium text-zinc-900">Pipeline</h2>
+    <Card className="space-y-4">
+      <CardHeader>Pipeline</CardHeader>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <form action={statusFormAction} className="space-y-1">
@@ -87,16 +145,10 @@ export function PipelinePanel({
                 </option>
               ))}
             </select>
-            <button
-              type="submit"
-              disabled={statusPending}
-              className="whitespace-nowrap rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-            >
-              {statusPending ? "Saving…" : "Save"}
-            </button>
+            <SaveButton pending={statusPending} label="Save" />
           </div>
           {followUpState ? <FollowUpBadge state={followUpState} /> : null}
-          {statusState.error ? <p className="text-sm text-red-600">{statusState.error}</p> : null}
+          <FieldFeedback error={statusState.error} saved={statusSaved} savedText="Status saved." />
         </form>
 
         <form action={priorityFormAction} className="space-y-1">
@@ -118,15 +170,9 @@ export function PipelinePanel({
                 </option>
               ))}
             </select>
-            <button
-              type="submit"
-              disabled={priorityPending}
-              className="whitespace-nowrap rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-            >
-              {priorityPending ? "Saving…" : "Save"}
-            </button>
+            <SaveButton pending={priorityPending} label="Save" />
           </div>
-          {priorityState.error ? <p className="text-sm text-red-600">{priorityState.error}</p> : null}
+          <FieldFeedback error={priorityState.error} saved={prioritySaved} savedText="Priority saved." />
         </form>
       </div>
 
@@ -161,97 +207,70 @@ export function PipelinePanel({
             />
           </div>
         </div>
-        <button
-          type="submit"
-          disabled={datesPending}
-          className="mt-2 rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 disabled:opacity-50"
-        >
-          {datesPending ? "Saving…" : "Save dates"}
-        </button>
-        {datesState.error ? <p className="text-sm text-red-600">{datesState.error}</p> : null}
+        <div className="mt-2">
+          <SaveButton pending={datesPending} label="Save dates" />
+        </div>
+        <FieldFeedback error={datesState.error} saved={datesSaved} savedText="Dates saved." />
       </form>
 
       <form action={angleFormAction} className="space-y-1 border-t border-zinc-100 pt-4">
         <div className="flex items-center justify-between">
-          <label htmlFor="outreachAngle" className="block text-xs font-medium uppercase tracking-wide text-zinc-400">
-            Outreach angle
-          </label>
           <span className="text-xs text-zinc-400">
             {angleText.length} / {OUTREACH_ANGLE_MAX_LENGTH}
           </span>
         </div>
-        <input
-          id="outreachAngle"
+        <FormField
+          label="Outreach angle"
           name="outreachAngle"
-          type="text"
-          value={angleText}
-          onChange={(e) => setAngleText(e.target.value)}
-          maxLength={OUTREACH_ANGLE_MAX_LENGTH}
-          disabled={anglePending}
-          placeholder="e.g. Led with the mobile performance finding"
-          className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-sm disabled:opacity-50"
-        />
-        <button
-          type="submit"
-          disabled={anglePending}
-          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 disabled:opacity-50"
+          description="Internal only — never included automatically in copied outreach output."
         >
-          {anglePending ? "Saving…" : "Save angle"}
-        </button>
-        {angleState.error ? <p className="text-sm text-red-600">{angleState.error}</p> : null}
+          <input
+            type="text"
+            value={angleText}
+            onChange={(e) => setAngleText(e.target.value)}
+            maxLength={OUTREACH_ANGLE_MAX_LENGTH}
+            disabled={anglePending}
+            placeholder="e.g. Led with the mobile performance finding"
+            className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-sm disabled:opacity-50"
+          />
+        </FormField>
+        <div className="mt-2">
+          <SaveButton pending={anglePending} label="Save angle" />
+        </div>
+        <FieldFeedback error={angleState.error} saved={angleSaved} savedText="Outreach angle saved." />
       </form>
 
       <form action={notesFormAction} className="space-y-1 border-t border-zinc-100 pt-4">
         <div className="flex items-center justify-between">
-          <label htmlFor="notes" className="block text-xs font-medium uppercase tracking-wide text-zinc-400">
-            Internal notes
-          </label>
           <span className="text-xs text-zinc-400">
             {notesText.length} / {NOTES_MAX_LENGTH.toLocaleString()}
           </span>
         </div>
-        <textarea
-          id="notes"
+        <FormField
+          label="Internal notes"
           name="notes"
-          value={notesText}
-          onChange={(e) => setNotesText(e.target.value)}
-          maxLength={NOTES_MAX_LENGTH}
-          disabled={notesPending}
-          rows={4}
-          placeholder="Private notes — never included in copied outreach output."
-          className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-sm disabled:opacity-50"
-        />
-        <button
-          type="submit"
-          disabled={notesPending}
-          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 disabled:opacity-50"
+          description="Private notes — never included in copied outreach output."
         >
-          {notesPending ? "Saving…" : "Save notes"}
-        </button>
-        {notesState.error ? <p className="text-sm text-red-600">{notesState.error}</p> : null}
+          <textarea
+            value={notesText}
+            onChange={(e) => setNotesText(e.target.value)}
+            maxLength={NOTES_MAX_LENGTH}
+            disabled={notesPending}
+            rows={4}
+            className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-sm disabled:opacity-50"
+          />
+        </FormField>
+        <div className="mt-2">
+          <SaveButton pending={notesPending} label="Save notes" />
+        </div>
+        <FieldFeedback error={notesState.error} saved={notesSaved} savedText="Notes saved." />
       </form>
-    </div>
+    </Card>
   );
 }
 
 function FollowUpBadge({ state }: { state: "overdue" | "due_today" | "upcoming" }) {
-  if (state === "overdue") {
-    return (
-      <span className="inline-block rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
-        Overdue follow-up
-      </span>
-    );
-  }
-  if (state === "due_today") {
-    return (
-      <span className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
-        Follow-up due today
-      </span>
-    );
-  }
-  return (
-    <span className="inline-block rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-600">
-      Follow-up upcoming
-    </span>
-  );
+  if (state === "overdue") return <Badge variant="danger">Overdue follow-up</Badge>;
+  if (state === "due_today") return <Badge variant="warning">Follow-up due today</Badge>;
+  return <Badge variant="neutral">Follow-up upcoming</Badge>;
 }

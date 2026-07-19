@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { EmptyState, TestDataBadge } from "@/components/ui";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/server";
 import type { AuditJobStatus } from "@/lib/supabase/database.types";
 
@@ -77,12 +78,21 @@ export default async function SearchResultsPage({
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
-      <header className="border-b border-zinc-200 bg-white px-8 py-5">
-        <Link href="/searches" className="text-sm text-zinc-500 hover:text-zinc-700">
-          ← Searches
-        </Link>
+      <header className="border-b border-zinc-200 bg-white px-4 py-5 sm:px-8">
+        <nav aria-label="Breadcrumb" className="text-sm text-zinc-500">
+          <Link href="/searches" className="hover:text-zinc-700">
+            Searches
+          </Link>
+          <span className="mx-1.5">/</span>
+          <span className="text-zinc-700">{search.niche}</span>
+        </nav>
         <h1 className="mt-1 text-lg font-semibold tracking-tight">
           {search.niche} — {[search.city, search.state].filter(Boolean).join(", ")}
+          {search.is_test ? (
+            <span className="ml-2 align-middle">
+              <TestDataBadge />
+            </span>
+          ) : null}
         </h1>
         <p className="mt-1 text-sm text-zinc-500">
           Status: {search.status} · Found {search.businesses_found} · Imported{" "}
@@ -90,15 +100,18 @@ export default async function SearchResultsPage({
           {search.businesses_without_website}
         </p>
         {search.error_message ? (
-          <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+          <p role="alert" className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
             {search.error_message}
           </p>
         ) : null}
       </header>
 
-      <main className="mx-auto w-full max-w-5xl px-8 py-10">
+      <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-8">
         {rows.length === 0 ? (
-          <p className="text-sm text-zinc-500">No businesses were imported for this search.</p>
+          <EmptyState
+            title="No businesses were imported for this search."
+            description="This can happen when a search found no matching results, or every result was filtered out."
+          />
         ) : (
           <QueueSelectedForm searchId={searchId} businesses={rows} />
         )}

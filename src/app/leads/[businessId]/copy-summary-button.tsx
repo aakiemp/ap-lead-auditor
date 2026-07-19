@@ -2,27 +2,35 @@
 
 import { useState } from "react";
 
+import { Button } from "@/components/ui";
+
+type CopyStatus = "idle" | "copied" | "failed";
+
 export function CopySummaryButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<CopyStatus>("idle");
 
   async function handleClick() {
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setStatus("copied");
     } catch {
-      // Clipboard access can fail (permissions, insecure context). Fail
-      // quietly rather than surfacing a raw browser error.
+      // Clipboard access can fail (permissions, insecure context) --
+      // surfaced to the operator rather than failing silently, since a
+      // silent failure here looks identical to a successful copy.
+      setStatus("failed");
+    } finally {
+      setTimeout(() => setStatus("idle"), 2000);
     }
   }
 
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white"
-    >
-      {copied ? "Copied!" : "Copy audit for ChatGPT or Claude"}
-    </button>
+    <div>
+      <Button type="button" variant="primary" onClick={handleClick}>
+        {status === "copied" ? "Copied!" : status === "failed" ? "Copy failed — try again" : "Copy audit for ChatGPT or Claude"}
+      </Button>
+      <span role="status" aria-live="polite" className="sr-only">
+        {status === "copied" ? "Copied to clipboard" : status === "failed" ? "Copy failed" : ""}
+      </span>
+    </div>
   );
 }

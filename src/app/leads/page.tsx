@@ -1,8 +1,10 @@
 import Link from "next/link";
 
+import { Badge, EmptyState, PageHeader, TestDataBadge } from "@/components/ui";
 import { getFollowUpState, getTodayISODate } from "@/lib/pipeline/lead-profile";
 import { LEAD_PRIORITIES, LEAD_PRIORITY_LABELS, LEAD_STATUSES, LEAD_STATUS_LABELS } from "@/lib/pipeline/pipeline-status";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/server";
+import { parseTestDataFilter, TEST_DATA_FILTER_OPTIONS } from "@/lib/test-data/filter";
 import type { LeadPriority, LeadStatus } from "@/lib/supabase/database.types";
 
 const PAGE_SIZE = 50;
@@ -85,18 +87,24 @@ export default async function LeadsPage({
   const searchText = (toSingle(rawParams.q) ?? "").trim();
   const sort = parseSort(rawParams.sort);
   const page = parsePage(rawParams.page);
+  const testFilter = parseTestDataFilter(rawParams.testData);
 
   const supabase = createSupabaseServiceRoleClient();
   const today = getTodayISODate();
 
-  // Text search and source filtering both live on `businesses`, not
-  // `lead_profiles` — resolved as a narrowing id set first (matching
-  // this project's established avoidance of PostgREST embedding).
+  // Text search, source, and test-data filtering all live on
+  // `businesses`, not `lead_profiles` — resolved as a narrowing id set
+  // first (matching this project's established avoidance of PostgREST
+  // embedding). The test-data filter defaults to "production", so this
+  // narrowing query runs on nearly every page load, not just when a
+  // search/source filter is active.
   let narrowedBusinessIds: string[] | null = null;
-  if (searchText || sourceFilter) {
+  if (searchText || sourceFilter || testFilter !== "include") {
     let businessQuery = supabase.from("businesses").select("id");
     if (searchText) businessQuery = businessQuery.ilike("name", `%${searchText}%`);
     if (sourceFilter) businessQuery = businessQuery.eq("source", sourceFilter);
+    if (testFilter === "production") businessQuery = businessQuery.eq("is_test", false);
+    else if (testFilter === "test_only") businessQuery = businessQuery.eq("is_test", true);
     const { data: matched } = await businessQuery;
     narrowedBusinessIds = (matched ?? []).map((b) => b.id);
   }
@@ -135,7 +143,7 @@ export default async function LeadsPage({
   const pageBusinessIds = rows.map((r) => r.business_id);
 
   const [{ data: businesses }, { data: websites }, { data: jobs }] = await Promise.all([
-    supabase.from("businesses").select("id, name, city, state, source").in("id", pageBusinessIds),
+    supabase.from("businesses").select("id, name, city, state, source, is_test").in("id", pageBusinessIds),
     supabase
       .from("websites")
       .select("business_id, final_url, input_url, is_reachable")
@@ -155,22 +163,25 @@ export default async function LeadsPage({
   }
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  // The exact URL the operator is currently viewing (filters, sort,
+  // page all included) — passed through as a validated `returnTo` so
+  // the lead-detail page's back link returns here, not to a
+  // filter-reset /leads.
+  const currentLeadsUrl = buildHref(rawParams, {});
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
-      <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-8 py-5">
-        <div>
-          <Link href="/" className="text-sm text-zinc-500 hover:text-zinc-700">
-            ← Dashboard
+      <PageHeader
+        title="Leads"
+        description={`${totalCount} lead${totalCount === 1 ? "" : "s"} match the current filters.`}
+        actions={
+          <Link href="/leads/new" className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white">
+            Add lead
           </Link>
-          <h1 className="mt-1 text-lg font-semibold tracking-tight">Leads</h1>
-        </div>
-        <Link href="/leads/new" className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white">
-          Add lead
-        </Link>
-      </header>
+        }
+      />
 
-      <main className="mx-auto w-full max-w-6xl px-8 py-10">
+      <main className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-8">
         <form method="get" className="mb-6 space-y-3 rounded-lg border border-zinc-200 bg-white p-4">
           <div className="flex flex-wrap items-end gap-4">
             <div>
@@ -240,6 +251,24 @@ export default async function LeadsPage({
               </select>
             </div>
 
+            <div>
+              <label htmlFor="testData" className="block text-xs font-medium uppercase tracking-wide text-zinc-400">
+                Test data
+              </label>
+              <select
+                id="testData"
+                name="testData"
+                defaultValue={testFilter}
+                className="mt-1 rounded-md border border-zinc-300 px-2 py-1.5 text-sm"
+              >
+                {TEST_DATA_FILTER_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <label className="flex items-center gap-2 pb-2 text-sm text-zinc-700">
               <input type="checkbox" name="overdue" value="1" defaultChecked={overdueOnly} className="h-4 w-4" />
               Overdue follow-up only
@@ -271,7 +300,14 @@ export default async function LeadsPage({
         </form>
 
         {rows.length === 0 ? (
-          <p className="text-sm text-zinc-500">No leads match these filters.</p>
+          <EmptyState
+            title={testFilter === "test_only" ? "No test leads match these filters." : "No leads match these filters."}
+            description={
+              testFilter === "production"
+                ? "Try including test data, or adjust the status/priority/search filters above."
+                : "Adjust the filters above and try again."
+            }
+          />
         ) : (
           <>
             <p className="mb-2 text-xs text-zinc-500">
@@ -281,14 +317,27 @@ export default async function LeadsPage({
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase text-zinc-500">
                   <tr>
-                    <th className="px-4 py-2">Business</th>
-                    <th className="px-4 py-2">Source</th>
-                    <th className="px-4 py-2">Website</th>
-                    <th className="px-4 py-2">Reachable</th>
-                    <th className="px-4 py-2">Job status</th>
-                    <th className="px-4 py-2">Status</th>
-                    <th className="px-4 py-2">Priority</th>
-                    <th className="px-4 py-2">Follow-up</th>
+                    <th scope="col" className="px-2 py-2 sm:px-4">
+                      Business
+                    </th>
+                    <th scope="col" className="hidden px-4 py-2 md:table-cell">
+                      Source
+                    </th>
+                    <th scope="col" className="hidden px-4 py-2 lg:table-cell">
+                      Reachable
+                    </th>
+                    <th scope="col" className="px-2 py-2 sm:px-4">
+                      Job status
+                    </th>
+                    <th scope="col" className="px-2 py-2 sm:px-4">
+                      Status
+                    </th>
+                    <th scope="col" className="px-2 py-2 sm:px-4">
+                      Priority
+                    </th>
+                    <th scope="col" className="px-2 py-2 sm:px-4">
+                      Follow-up
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -300,32 +349,38 @@ export default async function LeadsPage({
 
                     return (
                       <tr key={row.business_id} className="border-b border-zinc-100 last:border-0">
-                        <td className="px-4 py-2">
+                        <td className="px-2 py-3 sm:px-4">
                           <Link
-                            href={`/leads/${row.business_id}`}
+                            href={`/leads/${row.business_id}?returnTo=${encodeURIComponent(currentLeadsUrl)}`}
                             className="font-medium text-zinc-900 hover:underline"
                           >
                             {business?.name ?? "Unknown business"}
                           </Link>
+                          {business?.is_test ? (
+                            <span className="ml-2">
+                              <TestDataBadge />
+                            </span>
+                          ) : null}
                           <div className="text-xs text-zinc-400">
                             {[business?.city, business?.state].filter(Boolean).join(", ") || "—"}
                           </div>
+                          <div className="text-xs text-zinc-400 md:hidden">
+                            {business?.source === "google_places" ? "Google Places" : "Manual"}
+                            {website ? ` · ${website.final_url ?? website.input_url ?? ""}` : ""}
+                          </div>
                         </td>
-                        <td className="px-4 py-2 text-zinc-600">
+                        <td className="hidden px-4 py-3 text-zinc-600 md:table-cell">
                           {business?.source === "google_places" ? "Google Places" : "Manual"}
                         </td>
-                        <td className="px-4 py-2 text-zinc-600">
-                          {website?.final_url ?? website?.input_url ?? "—"}
-                        </td>
-                        <td className="px-4 py-2 text-zinc-600">
+                        <td className="hidden px-4 py-3 text-zinc-600 lg:table-cell">
                           {website ? (website.is_reachable ? "Yes" : website.is_reachable === false ? "No" : "Unknown") : "—"}
                         </td>
-                        <td className="px-4 py-2 text-zinc-600">{job?.status ?? "—"}</td>
-                        <td className="px-4 py-2 text-zinc-600">{LEAD_STATUS_LABELS[row.status]}</td>
-                        <td className="px-4 py-2 text-zinc-600">
+                        <td className="px-2 py-3 text-zinc-600 sm:px-4">{job?.status ?? "—"}</td>
+                        <td className="px-2 py-3 text-zinc-600 sm:px-4">{LEAD_STATUS_LABELS[row.status]}</td>
+                        <td className="px-2 py-3 text-zinc-600 sm:px-4">
                           {row.priority ? LEAD_PRIORITY_LABELS[row.priority] : "—"}
                         </td>
-                        <td className="px-4 py-2 text-zinc-600">
+                        <td className="px-2 py-3 text-zinc-600 sm:px-4">
                           {row.next_follow_up_date ? (
                             <div>
                               <div>{row.next_follow_up_date}</div>
@@ -342,7 +397,7 @@ export default async function LeadsPage({
               </table>
             </div>
 
-            <div className="mt-4 flex items-center justify-between text-sm">
+            <nav aria-label="Pagination" className="mt-4 flex items-center justify-between text-sm">
               <span className="text-zinc-500">
                 Page {page} of {totalPages}
               </span>
@@ -350,6 +405,7 @@ export default async function LeadsPage({
                 {page > 1 ? (
                   <Link
                     href={buildHref(rawParams, { page: String(page - 1) })}
+                    aria-label="Previous page"
                     className="rounded-md border border-zinc-300 px-3 py-1.5 font-medium text-zinc-700 hover:bg-zinc-50"
                   >
                     Previous
@@ -358,13 +414,14 @@ export default async function LeadsPage({
                 {page < totalPages ? (
                   <Link
                     href={buildHref(rawParams, { page: String(page + 1) })}
+                    aria-label="Next page"
                     className="rounded-md border border-zinc-300 px-3 py-1.5 font-medium text-zinc-700 hover:bg-zinc-50"
                   >
                     Next
                   </Link>
                 ) : null}
               </div>
-            </div>
+            </nav>
           </>
         )}
       </main>
@@ -373,19 +430,7 @@ export default async function LeadsPage({
 }
 
 function FollowUpBadge({ state }: { state: "overdue" | "due_today" | "upcoming" }) {
-  if (state === "overdue") {
-    return (
-      <span className="mt-0.5 inline-block rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
-        Overdue
-      </span>
-    );
-  }
-  if (state === "due_today") {
-    return (
-      <span className="mt-0.5 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
-        Due today
-      </span>
-    );
-  }
+  if (state === "overdue") return <Badge variant="danger">Overdue</Badge>;
+  if (state === "due_today") return <Badge variant="warning">Due today</Badge>;
   return null;
 }

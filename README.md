@@ -680,6 +680,36 @@ implemented — do not add a real value for it yet.
 **Use a development Supabase project only.** Do not point this app at a
 production project or real customer data at this stage.
 
+## Deployment
+
+Deployment timing was moved forward to right after Phase 11 (the
+original plan scheduled it for a later "Phase 16" that no longer
+applies — see `CLAUDE.md`'s "Roadmap"). **Status: done.** The app is
+deployed and production is live behind Vercel Authentication.
+
+- **The Vercel connection and every deployment are done manually**,
+  by importing this GitHub repo through the Vercel dashboard. No
+  deployment command (`vercel`, `npx vercel`) and no Vercel plugin is
+  ever run from within an agent/automation session working in this
+  repo.
+- **Once connected, pushes to `main` may trigger a Vercel deployment
+  automatically** — this is Vercel's default Git integration behavior.
+  Keep that in mind before pushing to `main` once the project is
+  connected; it stops being a purely local action.
+- **Production must use Vercel Authentication** (Vercel's own
+  platform-level gate on the deployed URL). This is separate from the
+  application's own user authentication, which is not implemented yet
+  (see `CLAUDE.md`'s "Postponed" section) — Vercel Authentication
+  protects the deployment from public access; it doesn't add per-user
+  access control inside the app itself.
+- **Environment variables for the deployed app are configured through
+  the Vercel dashboard**, never committed to this repo — the same
+  discipline already used for `.env.local` (gitignored; only
+  `.env.example` with placeholders is committed) extends to Vercel's
+  own environment variable settings.
+- **No secrets belong in Git or in documentation.** Neither this file
+  nor `CLAUDE.md` should ever contain a real API key or credential.
+
 ## Database
 
 There is no Supabase CLI set up in this project yet, so migrations are

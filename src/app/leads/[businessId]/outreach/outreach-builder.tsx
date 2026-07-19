@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 
+import { Badge, Button, Card, CardHeader, EmptyState } from "@/components/ui";
 import { buildProspectBrief, type OutreachBriefData, type OutreachFinding } from "@/lib/outreach/build-prospect-brief";
 import { renderProspectBriefMarkdown } from "@/lib/outreach/render-markdown";
 import { renderProspectBriefPlainText } from "@/lib/outreach/render-plain-text";
@@ -22,6 +23,12 @@ function confidenceBadgeText(confidence: OutreachFinding["confidence"]): string 
   if (confidence === "verified") return "Verified";
   if (confidence === "likely") return "Likely";
   return "Manual review";
+}
+
+function confidenceBadgeVariant(confidence: OutreachFinding["confidence"]): "success" | "warning" | "neutral" {
+  if (confidence === "verified") return "success";
+  if (confidence === "manual_review") return "warning";
+  return "neutral";
 }
 
 export function OutreachBuilder({
@@ -69,15 +76,18 @@ export function OutreachBuilder({
   const verifiedFindings = data.findings.filter((f) => f.status === "verified");
   const activeFindings = data.findings.filter((f) => f.status === "active");
   const dismissedFindings = data.findings.filter((f) => f.status === "dismissed");
+  const hasAnyFindings =
+    verifiedFindings.length > 0 || activeFindings.length > 0 || (includeDismissed && dismissedFindings.length > 0);
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div className="space-y-6">
-        <section className="rounded-lg border border-zinc-200 bg-white p-6">
-          <h2 className="text-sm font-medium text-zinc-900">Tone</h2>
-          <div className="mt-3 flex flex-col gap-2">
+        <Card>
+          <CardHeader>Tone</CardHeader>
+          <fieldset className="mt-3 flex flex-col gap-2">
+            <legend className="sr-only">Outreach tone</legend>
             {Object.values(TONE_PRESETS).map((preset) => (
-              <label key={preset.id} className="flex items-center gap-2 text-sm text-zinc-700">
+              <label key={preset.id} className="flex min-h-[1.75rem] items-center gap-2 text-sm text-zinc-700">
                 <input
                   type="radio"
                   name="tone"
@@ -88,23 +98,23 @@ export function OutreachBuilder({
                 {preset.label}
               </label>
             ))}
-          </div>
-        </section>
+          </fieldset>
+        </Card>
 
-        <section className="rounded-lg border border-zinc-200 bg-white p-6">
-          <h2 className="text-sm font-medium text-zinc-900">Screenshots</h2>
-          <div className="mt-3 grid grid-cols-2 gap-4">
+        <Card>
+          <CardHeader>Screenshots</CardHeader>
+          <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
             <ScreenshotThumbnail label="Mobile" url={screenshotUrls.mobile} />
             <ScreenshotThumbnail label="Desktop" url={screenshotUrls.desktop} />
           </div>
           <p className="mt-2 text-xs text-zinc-400">
             Shown here for your review only — never included as a link in the copied brief.
           </p>
-        </section>
+        </Card>
 
-        <section className="rounded-lg border border-zinc-200 bg-white p-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium text-zinc-900">Findings</h2>
+        <Card>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardHeader>Findings</CardHeader>
             <label className="flex items-center gap-2 text-xs text-zinc-600">
               <input
                 type="checkbox"
@@ -116,50 +126,63 @@ export function OutreachBuilder({
             </label>
           </div>
 
-          <FindingGroup
-            title="Verified"
-            findings={verifiedFindings}
-            selectedKeys={selectedKeys}
-            onToggle={toggleFinding}
-          />
-          <FindingGroup
-            title="Active"
-            findings={activeFindings}
-            selectedKeys={selectedKeys}
-            onToggle={toggleFinding}
-          />
-          {includeDismissed ? (
-            <FindingGroup
-              title="Dismissed"
-              findings={dismissedFindings}
-              selectedKeys={selectedKeys}
-              onToggle={toggleFinding}
-            />
-          ) : null}
-        </section>
+          {!hasAnyFindings ? (
+            <div className="mt-3">
+              <EmptyState
+                title="No findings selected for this brief."
+                description={
+                  dismissedFindings.length > 0 && !includeDismissed
+                    ? "All findings for this audit were dismissed. Check “Include dismissed findings” above to review them."
+                    : "This audit produced no findings to include."
+                }
+              />
+            </div>
+          ) : (
+            <>
+              <FindingGroup
+                title="Verified"
+                findings={verifiedFindings}
+                selectedKeys={selectedKeys}
+                onToggle={toggleFinding}
+              />
+              <FindingGroup
+                title="Active"
+                findings={activeFindings}
+                selectedKeys={selectedKeys}
+                onToggle={toggleFinding}
+              />
+              {includeDismissed ? (
+                <FindingGroup
+                  title="Dismissed"
+                  findings={dismissedFindings}
+                  selectedKeys={selectedKeys}
+                  onToggle={toggleFinding}
+                />
+              ) : null}
+            </>
+          )}
+        </Card>
       </div>
 
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex gap-2">
-            <button
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex gap-2" role="tablist" aria-label="Preview format">
+            <Button
               type="button"
+              variant={format === "plain" ? "primary" : "secondary"}
+              aria-pressed={format === "plain"}
               onClick={() => setFormat("plain")}
-              className={`rounded-md px-3 py-1.5 text-sm font-medium ${
-                format === "plain" ? "bg-zinc-900 text-white" : "border border-zinc-300 text-zinc-700"
-              }`}
             >
               Plain text
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              variant={format === "markdown" ? "primary" : "secondary"}
+              aria-pressed={format === "markdown"}
               onClick={() => setFormat("markdown")}
-              className={`rounded-md px-3 py-1.5 text-sm font-medium ${
-                format === "markdown" ? "bg-zinc-900 text-white" : "border border-zinc-300 text-zinc-700"
-              }`}
             >
               Markdown
-            </button>
+            </Button>
           </div>
           {format === "plain" ? (
             <CopyButton
@@ -201,30 +224,39 @@ function FindingGroup({
     <div className="mt-4 first:mt-3">
       <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-400">{title}</h3>
       <ul className="mt-2 space-y-2">
-        {findings.map((finding) => (
-          <li key={finding.key} className="flex items-start gap-2 rounded-md border border-zinc-200 p-2">
-            <input
-              type="checkbox"
-              checked={selectedKeys.has(finding.key)}
-              onChange={() => onToggle(finding.key)}
-              className="mt-1 h-4 w-4"
-            />
-            <div className="flex-1 text-sm">
-              <div className="flex items-center gap-2">
-                <span className="font-medium text-zinc-900">{finding.title}</span>
-                <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-600">
-                  {confidenceBadgeText(finding.confidence)}
-                </span>
+        {findings.map((finding) => {
+          const selected = selectedKeys.has(finding.key);
+          return (
+            <li
+              key={finding.key}
+              className={`flex items-start gap-2 rounded-md border p-2 ${
+                selected ? "border-zinc-900 bg-zinc-50" : "border-zinc-200"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={selected}
+                onChange={() => onToggle(finding.key)}
+                className="mt-1 h-4 w-4"
+                aria-label={`Include "${finding.title}" in the brief`}
+              />
+              <div className="flex-1 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium text-zinc-900">{finding.title}</span>
+                  <Badge variant={confidenceBadgeVariant(finding.confidence)}>
+                    {confidenceBadgeText(finding.confidence)}
+                  </Badge>
+                </div>
+                <p className="mt-0.5 text-zinc-600">{finding.description}</p>
+                {finding.confidence === "manual_review" ? (
+                  <p className="mt-0.5 text-xs text-amber-600">
+                    Will appear only under &quot;Items to verify manually&quot; in the brief.
+                  </p>
+                ) : null}
               </div>
-              <p className="mt-0.5 text-zinc-600">{finding.description}</p>
-              {finding.confidence === "manual_review" ? (
-                <p className="mt-0.5 text-xs text-amber-600">
-                  Will appear only under &quot;Items to verify manually&quot; in the brief.
-                </p>
-              ) : null}
-            </div>
-          </li>
-        ))}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -261,12 +293,13 @@ function CopyButton({
   const text = status === "copied" ? "Copied!" : status === "failed" ? "Copy failed — try again" : label;
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-    >
-      {text}
-    </button>
+    <div>
+      <Button type="button" variant="primary" onClick={onClick}>
+        {text}
+      </Button>
+      <span role="status" aria-live="polite" className="sr-only">
+        {status === "copied" ? "Copied to clipboard" : status === "failed" ? "Copy failed" : ""}
+      </span>
+    </div>
   );
 }

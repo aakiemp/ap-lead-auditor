@@ -2,6 +2,8 @@
 
 import { useActionState } from "react";
 
+import { Button } from "@/components/ui";
+
 import { runAuditAction, type RunAuditActionState } from "./actions";
 
 const INITIAL_STATE: RunAuditActionState = { error: null };
@@ -11,15 +13,17 @@ export function RunAuditButton({ businessId, jobId }: { businessId: string; jobI
   const [state, formAction, pending] = useActionState(boundAction, INITIAL_STATE);
 
   return (
-    <form action={formAction} className="mt-3">
-      <button
-        type="submit"
-        disabled={pending}
-        className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-      >
+    <form action={formAction}>
+      <Button type="submit" variant="primary" disabled={pending}>
         {pending ? "Running audit…" : "Run basic audit"}
-      </button>
-      {state.error ? <p className="mt-2 text-sm text-red-600">{state.error}</p> : null}
+      </Button>
+      <div aria-live="polite">
+        {state.error ? (
+          <p role="alert" className="mt-2 text-sm text-red-600">
+            {state.error}
+          </p>
+        ) : null}
+      </div>
     </form>
   );
 }

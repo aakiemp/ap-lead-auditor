@@ -9,6 +9,7 @@ export const searchIntakeSchema = z.object({
   minRating: z.coerce.number().min(1).max(5).optional(),
   minReviews: z.coerce.number().int().min(0).optional(),
   excludeNoWebsite: z.coerce.boolean().default(false),
+  isTest: z.coerce.boolean().default(false),
 });
 
 export type SearchIntakeInput = z.infer<typeof searchIntakeSchema>;

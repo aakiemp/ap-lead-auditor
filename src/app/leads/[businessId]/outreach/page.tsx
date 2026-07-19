@@ -162,17 +162,25 @@ export default async function OutreachPage({
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
-      <header className="border-b border-zinc-200 bg-white px-8 py-5">
-        <Link href={`/leads/${businessId}`} className="text-sm text-zinc-500 hover:text-zinc-700">
-          ← {business.name}
-        </Link>
+      <header className="border-b border-zinc-200 bg-white px-4 py-5 sm:px-8">
+        <nav aria-label="Breadcrumb" className="text-sm text-zinc-500">
+          <Link href="/leads" className="hover:text-zinc-700">
+            Leads
+          </Link>
+          <span className="mx-1.5">/</span>
+          <Link href={`/leads/${businessId}`} className="hover:text-zinc-700">
+            {business.name}
+          </Link>
+          <span className="mx-1.5">/</span>
+          <span className="text-zinc-700">Outreach</span>
+        </nav>
         <h1 className="mt-1 text-lg font-semibold tracking-tight">Prepare outreach</h1>
         <p className="mt-1 text-sm text-zinc-500">
           Generated from current audit evidence — nothing here is sent automatically.
         </p>
       </header>
 
-      <main className="mx-auto w-full max-w-5xl space-y-6 px-8 py-10">
+      <main className="mx-auto w-full max-w-5xl space-y-6 px-4 py-10 sm:px-8">
         <PipelinePanel
           businessId={businessId}
           data={{

@@ -3,6 +3,8 @@
 import { useActionState, useState } from "react";
 import Link from "next/link";
 
+import { Button } from "@/components/ui";
+
 import { queueSelectedAction, type QueueSelectedState } from "./actions";
 
 export interface QueueableBusinessRow {
@@ -49,32 +51,49 @@ export function QueueSelectedForm({
 
   return (
     <form action={formAction} className="space-y-4">
-      {state.error ? (
-        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{state.error}</p>
-      ) : null}
-      {state.summary ? (
-        <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{state.summary}</p>
-      ) : null}
+      <div aria-live="polite">
+        {state.error ? (
+          <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+            {state.error}
+          </p>
+        ) : null}
+        {state.summary ? (
+          <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{state.summary}</p>
+        ) : null}
+      </div>
 
       <div className="overflow-x-auto rounded-lg border border-zinc-200 bg-white">
         <table className="w-full text-left text-sm">
           <thead className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase text-zinc-500">
             <tr>
-              <th className="px-4 py-2">
+              <th scope="col" className="px-2 py-2 sm:px-4">
                 <input
                   type="checkbox"
                   checked={queueableIds.length > 0 && selected.size === queueableIds.length}
                   onChange={toggleAll}
                   disabled={queueableIds.length === 0}
                   className="h-4 w-4"
+                  aria-label="Select all queueable businesses"
                 />
               </th>
-              <th className="px-4 py-2">Business</th>
-              <th className="px-4 py-2">Category</th>
-              <th className="px-4 py-2">Location</th>
-              <th className="px-4 py-2">Rating</th>
-              <th className="px-4 py-2">Website</th>
-              <th className="px-4 py-2">Audit status</th>
+              <th scope="col" className="px-2 py-2 sm:px-4">
+                Business
+              </th>
+              <th scope="col" className="hidden px-4 py-2 md:table-cell">
+                Category
+              </th>
+              <th scope="col" className="hidden px-4 py-2 lg:table-cell">
+                Location
+              </th>
+              <th scope="col" className="hidden px-4 py-2 lg:table-cell">
+                Rating
+              </th>
+              <th scope="col" className="px-2 py-2 sm:px-4">
+                Website
+              </th>
+              <th scope="col" className="px-2 py-2 sm:px-4">
+                Audit status
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -82,7 +101,7 @@ export function QueueSelectedForm({
               const disabled = !business.hasWebsite || business.alreadyQueued;
               return (
                 <tr key={business.id} className="border-b border-zinc-100 last:border-0">
-                  <td className="px-4 py-2">
+                  <td className="px-2 py-3 sm:px-4">
                     <input
                       type="checkbox"
                       name="businessId"
@@ -91,27 +110,31 @@ export function QueueSelectedForm({
                       onChange={() => toggle(business.id)}
                       disabled={disabled}
                       className="h-4 w-4"
+                      aria-label={`Select ${business.name}`}
                     />
                   </td>
-                  <td className="px-4 py-2">
+                  <td className="px-2 py-3 sm:px-4">
                     <Link href={`/leads/${business.id}`} className="font-medium text-zinc-900 hover:underline">
                       {business.name}
                     </Link>
+                    <div className="text-xs text-zinc-400 md:hidden">
+                      {[business.category, [business.city, business.state].filter(Boolean).join(", ")]
+                        .filter(Boolean)
+                        .join(" · ") || "—"}
+                    </div>
                     {business.isNew && business.duplicateWarning ? (
                       <p className="mt-0.5 text-xs text-amber-600">{business.duplicateWarning}</p>
                     ) : null}
                   </td>
-                  <td className="px-4 py-2 text-zinc-600">{business.category ?? "—"}</td>
-                  <td className="px-4 py-2 text-zinc-600">
+                  <td className="hidden px-4 py-3 text-zinc-600 md:table-cell">{business.category ?? "—"}</td>
+                  <td className="hidden px-4 py-3 text-zinc-600 lg:table-cell">
                     {[business.city, business.state].filter(Boolean).join(", ") || "—"}
                   </td>
-                  <td className="px-4 py-2 text-zinc-600">
-                    {business.rating !== null
-                      ? `${business.rating} (${business.reviewCount ?? 0})`
-                      : "—"}
+                  <td className="hidden px-4 py-3 text-zinc-600 lg:table-cell">
+                    {business.rating !== null ? `${business.rating} (${business.reviewCount ?? 0})` : "—"}
                   </td>
-                  <td className="px-4 py-2 text-zinc-600">{business.hasWebsite ? "Yes" : "No"}</td>
-                  <td className="px-4 py-2 text-zinc-600">
+                  <td className="px-2 py-3 text-zinc-600 sm:px-4">{business.hasWebsite ? "Yes" : "No"}</td>
+                  <td className="px-2 py-3 text-zinc-600 sm:px-4">
                     {business.alreadyQueued ? "Already queued" : "—"}
                   </td>
                 </tr>
@@ -121,13 +144,9 @@ export function QueueSelectedForm({
         </table>
       </div>
 
-      <button
-        type="submit"
-        disabled={pending || selected.size === 0}
-        className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-      >
+      <Button type="submit" variant="primary" disabled={pending || selected.size === 0}>
         {pending ? "Queuing…" : `Queue selected (${selected.size})`}
-      </button>
+      </Button>
     </form>
   );
 }

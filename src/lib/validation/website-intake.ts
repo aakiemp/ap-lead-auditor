@@ -14,6 +14,7 @@ export const websiteIntakeSchema = z.object({
   city: z.string().trim().min(1).max(100).optional(),
   state: z.string().trim().min(1).max(100).optional(),
   phone: z.string().trim().min(1).max(50).optional(),
+  isTest: z.coerce.boolean().default(false),
 });
 
 export type WebsiteIntakeInput = z.infer<typeof websiteIntakeSchema>;

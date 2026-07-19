@@ -59,6 +59,7 @@ export async function createManualLead(input: WebsiteIntakeInput): Promise<Creat
       phone: input.phone ?? null,
       phone_normalized: normalizePhoneNumber(input.phone),
       source: "manual",
+      is_test: input.isTest,
     })
     .select("id")
     .single();

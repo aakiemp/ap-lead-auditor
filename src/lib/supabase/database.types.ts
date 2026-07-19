@@ -110,6 +110,7 @@ export type Database = {
           business_status: string | null;
           phone_normalized: string | null;
           last_places_sync_at: string | null;
+          is_test: boolean;
           created_at: string;
           updated_at: string;
         };
@@ -134,6 +135,7 @@ export type Database = {
           business_status?: string | null;
           phone_normalized?: string | null;
           last_places_sync_at?: string | null;
+          is_test?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -158,6 +160,7 @@ export type Database = {
           business_status?: string | null;
           phone_normalized?: string | null;
           last_places_sync_at?: string | null;
+          is_test?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -575,6 +578,7 @@ export type Database = {
           businesses_filtered: number;
           businesses_without_website: number;
           error_message: string | null;
+          is_test: boolean;
           created_at: string;
           updated_at: string;
         };
@@ -594,6 +598,7 @@ export type Database = {
           businesses_filtered?: number;
           businesses_without_website?: number;
           error_message?: string | null;
+          is_test?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -613,6 +618,7 @@ export type Database = {
           businesses_filtered?: number;
           businesses_without_website?: number;
           error_message?: string | null;
+          is_test?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -780,3 +786,7 @@ export type LeadProfile = Database["public"]["Tables"]["lead_profiles"]["Row"];
 export type LeadProfileUpdate = Database["public"]["Tables"]["lead_profiles"]["Update"];
 
 export type LeadActivity = Database["public"]["Tables"]["lead_activity"]["Row"];
+
+export type Search = Database["public"]["Tables"]["searches"]["Row"];
+export type SearchInsert = Database["public"]["Tables"]["searches"]["Insert"];
+export type SearchUpdate = Database["public"]["Tables"]["searches"]["Update"];

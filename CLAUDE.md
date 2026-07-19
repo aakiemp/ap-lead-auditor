@@ -28,7 +28,10 @@ Prioritize a working vertical slice over completeness or polish.
 ## Approved architecture
 
 - **Next.js (App Router) + TypeScript (strict) + Tailwind CSS**, deployed
-  to Vercel (later phase).
+  to Vercel. Deployment timing was moved forward after Phase 11 (see
+  "Deployment" below) but the connection itself is done manually by the
+  user through the Vercel dashboard — no CLI command or plugin install
+  from within this container.
 - **Supabase** for database and storage. No authentication yet — see
   "Current phase" below. Every table has row level security **enabled
   with no policies** (deny-all for anon/authenticated roles); real
@@ -59,6 +62,48 @@ Prioritize a working vertical slice over completeness or polish.
 - External integrations planned: Google Places API, Google PageSpeed
   Insights API, Apify (screenshots/crawling), Make.com. No OpenAI API,
   no Anthropic API, no paid AI processing, no Airtable.
+
+## Deployment
+
+The original phase plan scheduled Vercel deployment for what was then
+called "Phase 16" (alongside cost controls, retry limits, and a
+security hardening pass — see "Roadmap" for why that phase number no
+longer applies). That timing was **intentionally moved forward to
+after Phase 11** — the user connected and deployed the GitHub repo
+manually through the Vercel dashboard rather than waiting. **Status:
+done.** Production is live and protected by Vercel Authentication.
+
+- **The Vercel connection and every deployment are done manually by
+  the user through the Vercel dashboard** (import the GitHub repo,
+  configure the project there). This is not something an agent working
+  in this container performs.
+- **Do not run deployment commands from this container.** No `vercel`
+  or `npx vercel` CLI usage, no Vercel plugin installation
+  (`npx plugins add ...` or otherwise), no scripted deployment of any
+  kind. If a task seems to call for one of these, stop and ask instead
+  of running it — see "Autonomous execution safety rules" below, which
+  this section reinforces rather than relaxes.
+- **Once the project is connected, pushes to `main` may trigger a
+  Vercel deployment automatically** (Vercel's default Git integration
+  behavior). Treat `git push` to `main` with that in mind going
+  forward — it is no longer a purely local action once the dashboard
+  connection exists.
+- **Production must use Vercel Authentication** (Vercel's
+  platform-level access gate on the deployed URL) — this is separate
+  from, and not a substitute for, the application's own Supabase Auth,
+  which remains unimplemented (see "Postponed"). Vercel Authentication
+  protects the deployment itself from public access; it says nothing
+  about per-user access inside the app.
+- **Environment variables for the deployed app are configured through
+  the Vercel dashboard**, not committed anywhere in this repo. This
+  matches the existing local-dev rule (`.env.local` is gitignored;
+  only `.env.example` with placeholders is committed) — the same
+  discipline now extends to the Vercel project's own environment
+  variable settings.
+- **No secrets belong in Git or in documentation.** Neither this file
+  nor `README.md` should ever contain a real API key, service role
+  key, or other credential — placeholders only, exactly as already
+  practiced for `.env.example`.
 
 ## Evidence-based wording rules
 
@@ -123,8 +168,9 @@ schema are `verified`, `likely`, `manual_review` — use them honestly.
     theoretically change between the check and the actual request a
     few milliseconds later). Accepted for this internal, single-user
     MVP where URLs are typed in by the owner, not adversarial input.
-    Revisit with IP-pinned connections in the Phase 16 security pass if
-    this ever becomes multi-user or public-facing.
+    Revisit with IP-pinned connections in a future security hardening
+    pass if this ever becomes multi-user or public-facing (no longer
+    tied to a specific phase number — see "Roadmap").
 - Sanitize any HTML snippets before storing/rendering them as evidence.
 - Rate-limit API endpoints once they exist.
 - Do not commit secrets. `.env.local` is gitignored; only
@@ -145,29 +191,82 @@ schema are `verified`, `likely`, `manual_review` — use them honestly.
 | 9 | Async job boundary made real: `/api/jobs/claim`, `/api/jobs/update`; local worker script |
 | 10 | Make.com scenarios for Places + PageSpeed + Apify batches |
 | 11 | Deep audit: crawl up to 10 pages, broken links, form field introspection, structured data |
-| 12 | Business-value score, contactability score, blended priority score |
-| 13 | Lead table filters/sorting, dashboard summary metrics |
-| 14 | Outreach CRM (statuses, notes, follow-up dates) |
-| 15 | Scoring-settings UI, `app_settings`, freshness-window/re-audit-skip logic |
-| 16 | Cost controls, retry limits, usage logging, security hardening pass, tests, deploy to Vercel |
+| 12+ | Superseded — see "Roadmap" below for the current, accurate plan |
 
 Authentication (Supabase Auth, login/signup, protected routes, a
 `profiles` table, user-based RLS) is intentionally not scheduled as its
-own numbered phase above — it will be inserted before whichever phase
-first needs it (likely before Phase 9's real async job endpoints go
-live, or before deployment in Phase 16, whichever comes first). Do not
-add it preemptively; wait for explicit approval.
+own numbered phase above — see "Roadmap" below (full multi-user
+authentication is deferred unless later approved). Do not add it
+preemptively; wait for explicit approval.
 
-**Note on phase numbering:** the table above reflects the original
-phase plan drafted at project inception. Actual approved scope for
-Phase 9 onward diverged from these original one-line descriptions —
-Phase 9 became the audit queue dashboard, Phase 10 became outreach
-preparation, and Phase 11 became the lightweight lead/outreach
-pipeline described under "Current phase" below, not this table's
-original "deep audit"/"Make.com scenarios" text. "Current phase" is
-the authoritative, up-to-date record of what was actually built at
-each phase number; this table is kept for historical planning context
-and has not been rewritten to match.
+**Note on phase numbering:** rows 1–11 above reflect the original
+phase plan drafted at project inception, kept for historical context.
+Actual approved scope for Phase 9 onward diverged from these original
+one-line descriptions — Phase 9 became the audit queue dashboard,
+Phase 10 became outreach preparation, and Phase 11 became the
+lightweight lead/outreach pipeline described under "Current phase"
+below, not this table's original "deep audit"/"Make.com scenarios"
+text. Rows 12–16 (business-value/contactability/blended-priority
+scoring, filters/sorting, outreach CRM, scoring settings, cost
+controls + deploy) are now fully superseded by the "Roadmap" section
+below — several of those original items were already delivered early
+(filters/sorting and outreach CRM both landed as part of Phase 11;
+deployment now happens manually via the Vercel dashboard rather than
+as a phase deliverable), and the remaining scoring/settings work has
+been deliberately deferred in favor of different priorities. "Current
+phase" is the authoritative, up-to-date record of what was actually
+built at each phase number.
+
+## Roadmap
+
+This section reflects the actual state of the application and
+supersedes the stale parts of the "Phase plan" table above (rows
+12–16). Last updated when Phase 12 was redefined, after Phase 11
+shipped.
+
+**Completed:**
+
+- Lead discovery and import (Phase 8 — Google Places search, dedup)
+- Website audits and scoring (Phases 4/7 — PageSpeed + HTML scan,
+  website-need score)
+- Screenshots (Phase 6 — mobile/desktop homepage capture via Apify)
+- Audit queue and live progress (Phases 9/9.5 — `/queue` dashboard,
+  batch processing, progress instrumentation)
+- Outreach preparation (Phase 10 — prospect brief, tone presets, copy
+  to clipboard)
+- Lead pipeline and follow-up tracking (Phase 11 — status/priority/
+  notes/outreach-angle/dates, atomic status history, `/leads`
+  filters/sorting/pagination)
+- Vercel deployment and protection (manual dashboard connection, per
+  "Deployment" above — production is live behind Vercel
+  Authentication)
+
+**Phase 12 (current target) — UX polish, performance, production
+cleanup, and test-data management:**
+
+- Test-data labeling and cleanup — distinguishing/managing the many
+  fixture businesses, searches, and leads accumulated across Phases
+  3–11's testing from real production data
+- Dashboard redesign
+- Navigation and information architecture
+- Loading and interaction improvements
+- Production query and rendering performance
+- Responsive design
+- Accessibility and consistency
+- Production error and cost visibility where appropriate
+
+**Deferred unless later approved:**
+
+- Business-value/contactability/blended-priority scoring (the
+  original Phase 12)
+- Editable scoring settings (the original Phase 15)
+- Contact enrichment
+- Competitor analysis
+- Multi-page crawling
+- AI-generated outreach
+- Automated outreach sending
+- Make.com integration
+- Full multi-user authentication
 
 ## Current phase
 
@@ -175,6 +274,15 @@ and has not been rewritten to match.
 Phase 10's real-browser interaction checks remain pending the user's
 own click-through (see below). Phase 11 has an additional, narrower
 testing gap of its own — see its write-up below.
+
+**Deployment (decided and completed after Phase 11, before Phase 12):**
+the user connected this repo to Vercel and deployed it manually through
+the Vercel dashboard, rather than any CLI/agent-driven step, and rather
+than waiting for the phase that originally covered it. Production is
+live behind Vercel Authentication. This was a scope/sequencing
+decision plus a manual user action, not application work — no phase's
+implementation status changes because of it. See "Deployment" above
+for the full policy.
 
 Phase 3 added the manual single-website intake flow: `/leads/new` (a
 Next.js Server Action, not a public API route), `/leads` (list),
@@ -969,10 +1077,19 @@ section for the exact verified records.
 
 ## Postponed (not yet implemented — do not add without explicit approval)
 
+This is the granular, implementation-level list. For the current
+high-level plan (what's actually next vs. deferred), see "Roadmap"
+above — its "Deferred unless later approved" bucket and this list
+describe the same reality at different levels of detail.
+
 - Authentication: Supabase Auth, login/signup pages, protected routes,
   `profiles` table, user roles, and any user-based RLS policy (RLS
   itself is enabled with no policies as of Phase 2 — see "Current
   phase" — but real per-user policies wait for auth)
+- Contact enrichment: finding new contact details (emails, additional
+  phone numbers, social profiles, decision-maker names) from external
+  sources — distinct from the contact-information mismatch checking
+  below, which only compares data already on hand
 - Seed data
 - Desktop PageSpeed (mobile only is implemented as of Phase 4)
 - Deep/multi-page crawling (Phase 7 scans the homepage only, one page)
@@ -1027,7 +1144,11 @@ section for the exact verified records.
   only, as of Phase 6 — deliberate, since each run costs money)
 - Make.com integration
 - Background/async workers
-- Vercel deployment
+- Deployment automation of any kind from this container (CLI commands,
+  plugins, scripted deploys). The Vercel connection and every actual
+  deployment are approved to happen now, after Phase 11, but only
+  manually by the user through the Vercel dashboard — see
+  "Deployment" above.
 
 ## Autonomous execution safety rules
 
@@ -1038,7 +1159,11 @@ elevated/non-interactive permissions:
 - Do not use `sudo`.
 - Do not run destructive Git commands (force-push, hard reset, branch
   deletion, `git clean`) without explicit user approval.
-- Do not deploy to Vercel or any hosting target.
+- Do not deploy to Vercel or any hosting target. Do not run `vercel`/
+  `npx vercel` or any other deployment command, and do not install a
+  Vercel plugin, from within this container — deployment is performed
+  manually by the user through the Vercel dashboard only. See
+  "Deployment" above.
 - Do not create or connect production services (Supabase, or otherwise)
   — development project only, per "Approved architecture" above.
 - Do not commit secrets. Use placeholder environment variables only in
